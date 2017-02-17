@@ -1,17 +1,21 @@
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, namedtuple
 from itertools import chain
 import numpy as np
 import random
 import sys
 import argparse
 import dynet as dy
+from nltk.translate.bleu_score import corpus_bleu
 
 def init_config():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dynet-gpu', action='store_true', default=False)
     parser.add_argument('--dynet-mem', default=4000, type=int)
 
+    parser.add_argument('--mode', choices=['train', 'test'], default='train')
+
     parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--beam_size', default=5, type=int)
     parser.add_argument('--embed_size', default=512, type=int)
     parser.add_argument('--hidden_size', default=512, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
@@ -23,8 +27,14 @@ def init_config():
     parser.add_argument('--train_tgt')
     parser.add_argument('--dev_src')
     parser.add_argument('--dev_tgt')
+    parser.add_argument('--test_src')
+    parser.add_argument('--test_tgt')
+
+    parser.add_argument('--decode_max_time_step', default=200, type=int)
 
     parser.add_argument('--valid_niter', default=500, type=int)
+    parser.add_argument('--model', default=None, type=str)
+    parser.add_argument('--patience', default=5, type=int)
 
     args = parser.parse_args()
 
@@ -51,10 +61,12 @@ def build_vocab(data, cutoff):
     vocab['</s>'] = 2
 
     word_freq = Counter(chain(*data))
-    top_k_words = sorted(word_freq, reverse=True, key=word_freq.get)[:cutoff - len(vocab)]
+    non_singletons = [w for w in word_freq if word_freq[w] > 1 and w not in vocab]  # do not count <unk> in corpus
+    print 'number of word types: %d, number of word types w/ frequency > 1: %d' % (len(word_freq), len(non_singletons))
+
+    top_k_words = sorted(non_singletons, reverse=True, key=word_freq.get)[:cutoff - len(vocab)]
     for word in top_k_words:
-        freq = word_freq
-        if freq >= 1 and word not in vocab:
+        if word not in vocab:
             vocab[word] = len(vocab)
 
     return vocab
@@ -63,6 +75,13 @@ def build_vocab(data, cutoff):
 def build_id2word_vocab(vocab):
     return {v: k for k, v in vocab.iteritems()}
 
+
+class Hypothesis(object):
+    def __init__(self, state, y, ctx_tm1, score):
+        self.state = state
+        self.y = y
+        self.ctx_tm1 = ctx_tm1
+        self.score = score
 
 class NMT(object):
     # define dynet model for the encoder-decoder model
@@ -110,9 +129,11 @@ class NMT(object):
 
         return src_encodings
 
-    def translate(self, src_sent):
+    def translate(self, src_sent, beam_size=None):
         if not type(src_sent[0]) == list:
             src_sent = [src_sent]
+        if not beam_size:
+            beam_size = args.beam_size
 
         src_encodings = self.encode(src_sent)
 
@@ -122,33 +143,61 @@ class NMT(object):
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
 
-        s = self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)])
-        ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
 
-        hypothesis = ['<s>']
+        completed_hypotheses = []
+        hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)]),
+                                 y=[self.tgt_vocab['<s>']],
+                                 ctx_tm1=dy.vecInput(self.args.hidden_size * 2),
+                                 score=0.)]
 
-        for t in xrange(100):
-            y_tm1 = hypothesis[-1]
-            y_tm1_embed = dy.lookup_batch(self.tgt_lookup, [self.tgt_vocab[y_tm1]])
+        t = 0
+        while len(completed_hypotheses) < beam_size and t < args.decode_max_time_step:
+            t += 1
+            new_hyp_scores_list = []
+            for hyp in hypotheses:
+                y_tm1_embed = dy.lookup(self.tgt_lookup, hyp.y[-1])
+                x = dy.concatenate([y_tm1_embed, hyp.ctx_tm1])
 
-            x = dy.concatenate([y_tm1_embed, ctx_tm1])
-            s = s.add_input(x)
-            h_t = s.output()
-            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
+                hyp.state = hyp.state.add_input(x)
+                h_t = hyp.state.output()
+                ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
 
-            y_t = dy.affine_transform([b_y, W_y, dy.concatenate([h_t, ctx_t])])
-            p_t = dy.log_softmax(y_t).npvalue()
+                y_t = dy.affine_transform([b_y, W_y, dy.concatenate([h_t, ctx_t])])
+                p_t = dy.log_softmax(y_t).npvalue()
 
-            y_t_id = np.argmax(p_t)
-            y_t = self.tgt_vocab_id2word[y_t_id]
+                hyp.ctx_tm1 = ctx_t
 
-            hypothesis.append(y_t)
-            ctx_tm1 = ctx_t
+                # add the score of the current hypothesis to p_t
+                new_hyp_scores = hyp.score + p_t
+                new_hyp_scores_list.append(new_hyp_scores)
 
-            if y_t == '</s>':
-                break
+            live_nyp_num = beam_size - len(completed_hypotheses)
+            new_hyp_scores = np.concatenate(new_hyp_scores_list)
+            new_hyp_pos = (-new_hyp_scores).argsort()[:live_nyp_num]
+            prev_hyp_ids = new_hyp_pos / args.tgt_vocab_size
+            word_ids = new_hyp_pos % args.tgt_vocab_size
+            new_hyp_scores = new_hyp_scores[new_hyp_pos]
 
-        return hypothesis
+            new_hypotheses = []
+
+            for prev_hyp_id, word_id, hyp_score in zip(prev_hyp_ids, word_ids, new_hyp_scores):
+                prev_hyp = hypotheses[prev_hyp_id]
+                hyp = Hypothesis(state=prev_hyp.state,
+                                 y=prev_hyp.y + [word_id],
+                                 ctx_tm1=prev_hyp.ctx_tm1,
+                                 score=hyp_score)
+
+                if word_id == self.tgt_vocab['</s>']:
+                    completed_hypotheses.append(hyp)
+                else:
+                    new_hypotheses.append(hyp)
+
+            hypotheses = new_hypotheses
+
+        for hyp in completed_hypotheses:
+            hyp.y = [self.tgt_vocab_id2word[i] for i in hyp.y]
+
+        return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
     def get_decode_loss(self, src_encodings, tgt_sents):
         W_s = dy.parameter(self.W_s)
@@ -213,6 +262,10 @@ class NMT(object):
 
         return loss
 
+    def load(self, path):
+        print 'loading model from: %s' % path
+        self.model.load(path)
+
 
 def batch_slice(data, batch_size):
     batch_num = int(np.ceil(len(data) / float(batch_size)))
@@ -233,12 +286,10 @@ def data_iter(data, batch_size):
         tuples = buckets[src_len]
         batched_data.extend(list(batch_slice(tuples, batch_size)))
 
-    while True:
-        print 'new epoch'
 
-        np.random.shuffle(batched_data)
-        for batch in batched_data:
-            yield batch
+    np.random.shuffle(batched_data)
+    for batch in batched_data:
+        yield batch
 
 
 def input_transpose(sents, pad=True):
@@ -280,32 +331,99 @@ def train(args):
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = 0
-    for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
-        train_iter += 1
-        src_sents_wids = word2id(src_sents, src_vocab)
-        tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
-        batch_size = len(src_sents)
+    train_iter = patience = cum_loss = cum_examples = 0
+    hist_valid_scores = []
+    while True:
+        epoch = 1
+        for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
+            train_iter += 1
+            src_sents_wids = word2id(src_sents, src_vocab)
+            tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
+            batch_size = len(src_sents)
 
-        if train_iter % args.valid_niter == 0:
-            for i in xrange(min(10, len(dev_data))):
-                dev_src_sent, dev_tgt_sent = dev_data[i]
-                print 'source:', dev_src_sent
-                print 'target:', dev_tgt_sent
-                print 'greedy decoding:', model.translate(word2id(dev_src_sent, src_vocab))
-                print '*' * 50
+            if train_iter % args.valid_niter == 0:
+                print >>sys.stderr, 'epoch %d, iter %d, cum. loss %f, cum. examples %d' % (epoch, train_iter,
+                                                                                           cum_loss / cum_examples,
+                                                                                           cum_examples)
+                cum_loss = cum_examples = 0.
+                print >>sys.stderr, 'begin validation ...'
+                dev_hyps, dev_bleu = decode(model, dev_data)
+                print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
 
-            model.model.save('model.bin')
+                is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
 
-        loss = model.get_encdec_loss(src_sents_wids, tgt_sents_wids)
-        loss_val = loss.value()
-        ppl = np.exp(loss_val * batch_size / sum(len(s) for s in tgt_sents))
-        print >>sys.stderr, 'loss=%f, ppl=%f' % (loss_val, ppl)
+                if is_better:
+                    print >>sys.stderr, 'save currently the best model ..'
+                    model.model.save('model.bin')
+                else:
+                    patience += 1
+                    print >>sys.stderr, 'hit patience %d' % patience
+                    if patience == args.patience:
+                        print 'early stop!'
+                        exit(0)
 
-        loss.backward()
-        trainer.update()
+            loss = model.get_encdec_loss(src_sents_wids, tgt_sents_wids)
+            loss_val = loss.value()
+
+            cum_loss += loss_val * batch_size
+            cum_examples += batch_size
+
+            ppl = np.exp(loss_val * batch_size / sum(len(s) for s in tgt_sents))
+            print 'epoch %d, iter %d, loss=%f, ppl=%f' % (epoch, train_iter, loss_val, ppl)
+
+            loss.backward()
+            trainer.update()
+
+
+def get_bleu(references, hypotheses):
+    # compute BLEU
+    bleu_score = corpus_bleu([[ref[1:-1]] for ref in references],
+                             [hyp[1:-1] for hyp in hypotheses])
+
+    return bleu_score
+
+def decode(model, data):
+    hypotheses = []
+    for src_sent, tgt_sent in data:
+        src_sent_wids = word2id(src_sent, model.src_vocab)
+        hyp = model.translate(src_sent_wids)[0]
+        hypotheses.append(hyp.y)
+        print '*' * 50
+        print 'Source: ', ' '.join(src_sent)
+        print 'Target: ', ' '.join(tgt_sent)
+        print 'Hypothesis: ', ' '.join(hyp.y)
+
+    bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
+    return hypotheses, bleu_score
+
+def test(args):
+    train_data_src = read_corpus(args.train_src)
+    train_data_tgt = read_corpus(args.train_tgt)
+
+    src_vocab = build_vocab(train_data_src, args.src_vocab_size)
+    tgt_vocab = build_vocab(train_data_tgt, args.tgt_vocab_size)
+
+    src_vocab_id2word = build_id2word_vocab(src_vocab)
+    tgt_vocab_id2word = build_id2word_vocab(tgt_vocab)
+
+    test_data_src = read_corpus(args.test_src)
+    test_data_tgt = read_corpus(args.test_tgt)
+
+    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
+    model.load(args.model)
+
+    test_data = zip(test_data_src, test_data_tgt)
+
+    hypotheses, bleu_score = decode(model, test_data)
+
+    bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
+    print 'Corpus Level BLEU: %f' % bleu_score
 
 if __name__ == '__main__':
     args = init_config()
-    train(args)
+    if args.mode == 'train':
+        train(args)
+    elif args.mode == 'test':
+        test(args)
+
 
