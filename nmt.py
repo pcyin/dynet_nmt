@@ -107,14 +107,17 @@ class NMT(object):
         # target word embedding
         self.W_y = model.add_parameters((args.tgt_vocab_size, args.embed_size))
         self.b_y = model.add_parameters((args.tgt_vocab_size))
+        self.b_y.zero()
 
         # transformation of decoder hidden states and context vectors before reading out target words
         self.W_h = model.add_parameters((args.embed_size, args.hidden_size + args.hidden_size * 2))
         self.b_h = model.add_parameters((args.embed_size))
+        self.b_h.zero()
 
         # transformation of context vectors at t_0 in decoding
         self.W_s = model.add_parameters((args.hidden_size, args.hidden_size * 2))
         self.b_s = model.add_parameters((args.hidden_size))
+        self.b_s.zero()
 
         self.W1_att_f = model.add_parameters((args.attention_size, args.hidden_size * 2))
         self.W1_att_e = model.add_parameters((args.attention_size, args.hidden_size))
@@ -171,8 +174,8 @@ class NMT(object):
                 h_t = hyp.state.output()
                 ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
 
-                read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
-                y_t = dy.affine_transform([b_y, W_y, read_out])
+                read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+                y_t = W_y * read_out + b_y
                 p_t = dy.log_softmax(y_t).npvalue()
 
                 hyp.ctx_tm1 = ctx_t
@@ -235,8 +238,8 @@ class NMT(object):
             h_t = s.output()
             ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
 
-            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
-            y_t = dy.affine_transform([b_y, W_y, read_out])
+            read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+            y_t = W_y * read_out + b_y
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             if 0 in mask_t:
