@@ -13,7 +13,7 @@ def init_config():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dynet-gpu', action='store_true', default=False)
     parser.add_argument('--dynet-mem', default=4000, type=int)
-    parser.add_argument('--dynet-mem', default=4000, type=int)
+    parser.add_argument('--dynet-seed', default=19920117, type=int)
 
     parser.add_argument('--mode', choices=['train', 'test'], default='train')
 
