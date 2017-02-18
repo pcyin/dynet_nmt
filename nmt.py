@@ -361,6 +361,7 @@ def train(args):
                 hist_valid_scores.append(dev_bleu)
 
                 if is_better:
+                    patience = 0
                     print >>sys.stderr, 'save currently the best model ..'
                     model.model.save(args.save_to + '.bin')
                 else:
