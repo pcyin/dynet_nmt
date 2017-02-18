@@ -13,6 +13,7 @@ def init_config():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dynet-gpu', action='store_true', default=False)
     parser.add_argument('--dynet-mem', default=4000, type=int)
+    parser.add_argument('--dynet-seed', default=914808182, type=int)
 
     parser.add_argument('--mode', choices=['train', 'test'], default='train')
 
@@ -40,6 +41,7 @@ def init_config():
     parser.add_argument('--patience', default=5, type=int)
 
     args = parser.parse_args()
+    np.random.seed(args.dynet_seed * 13 / 7)
 
     if args.dynet_gpu:  # the python gpu switch.
         print 'using GPU'
@@ -281,7 +283,7 @@ class NMT(object):
         return loss
 
     def load(self, path):
-        print 'loading model from: %s' % path
+        print >>sys.stderr, 'loading model from: %s' % path
         self.model.load(path)
 
 
@@ -372,6 +374,7 @@ def train(args):
                 hist_valid_scores.append(dev_bleu)
 
                 if is_better:
+                    patience = 0
                     print >>sys.stderr, 'save currently the best model ..'
                     model.model.save(args.save_to + '.bin')
                 else:
@@ -444,6 +447,7 @@ def test(args):
 
 if __name__ == '__main__':
     args = init_config()
+    print >>sys.stderr, args
     if args.mode == 'train':
         train(args)
     elif args.mode == 'test':
