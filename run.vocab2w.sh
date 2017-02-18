@@ -1,0 +1,14 @@
+python nmt.py \
+	--dynet-mem 10000 \
+    --dynet-gpu \
+    --mode test \
+    --model model.vocab2w.bin \
+    --save_to model.full_vocab \
+    --valid_niter 2500 \
+    --beam_size 5 \
+    --train_src en-de/train.en-de.low.filt.en \
+    --train_tgt en-de/train.en-de.low.filt.de \
+    --dev_src en-de/valid.en-de.low.en \
+    --dev_tgt en-de/valid.en-de.low.de \
+    --test_src en-de/test.en-de.low.en \
+    --test_tgt en-de/test.en-de.low.de 2>train.vocab2w.log
