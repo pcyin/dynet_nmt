@@ -13,6 +13,7 @@ def init_config():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dynet-gpu', action='store_true', default=False)
     parser.add_argument('--dynet-mem', default=4000, type=int)
+    parser.add_argument('--dynet-mem', default=4000, type=int)
 
     parser.add_argument('--mode', choices=['train', 'test'], default='train')
 
@@ -269,7 +270,7 @@ class NMT(object):
         return loss
 
     def load(self, path):
-        print 'loading model from: %s' % path
+        print >>sys.stderr, 'loading model from: %s' % path
         self.model.load(path)
 
 
