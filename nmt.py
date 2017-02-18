@@ -5,6 +5,8 @@ import random
 import sys
 import argparse
 import dynet as dy
+import cPickle as pkl
+import time
 from nltk.translate.bleu_score import corpus_bleu
 
 def init_config():
@@ -34,6 +36,7 @@ def init_config():
 
     parser.add_argument('--valid_niter', default=500, type=int)
     parser.add_argument('--model', default=None, type=str)
+    parser.add_argument('--save_to', default='model', type=str)
     parser.add_argument('--patience', default=5, type=int)
 
     args = parser.parse_args()
@@ -172,7 +175,7 @@ class NMT(object):
                 new_hyp_scores_list.append(new_hyp_scores)
 
             live_nyp_num = beam_size - len(completed_hypotheses)
-            new_hyp_scores = np.concatenate(new_hyp_scores_list)
+            new_hyp_scores = np.concatenate(new_hyp_scores_list).flatten()
             new_hyp_pos = (-new_hyp_scores).argsort()[:live_nyp_num]
             prev_hyp_ids = new_hyp_pos / args.tgt_vocab_size
             word_ids = new_hyp_pos % args.tgt_vocab_size
@@ -193,6 +196,9 @@ class NMT(object):
                     new_hypotheses.append(hyp)
 
             hypotheses = new_hypotheses
+
+        if len(completed_hypotheses) == 0:
+            completed_hypotheses = [hypotheses[0]]
 
         for hyp in completed_hypotheses:
             hyp.y = [self.tgt_vocab_id2word[i] for i in hyp.y]
@@ -284,8 +290,8 @@ def data_iter(data, batch_size):
     batched_data = []
     for src_len in buckets:
         tuples = buckets[src_len]
+        np.random.shuffle(tuples)
         batched_data.extend(list(batch_slice(tuples, batch_size)))
-
 
     np.random.shuffle(batched_data)
     for batch in batched_data:
@@ -331,10 +337,10 @@ def train(args):
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = patience = cum_loss = cum_examples = 0
+    train_iter = patience = cum_loss = cum_examples = epoch = 0
     hist_valid_scores = []
     while True:
-        epoch = 1
+        epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
             train_iter += 1
             src_sents_wids = word2id(src_sents, src_vocab)
@@ -351,10 +357,11 @@ def train(args):
                 print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
 
                 is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
+                hist_valid_scores.append(dev_bleu)
 
                 if is_better:
                     print >>sys.stderr, 'save currently the best model ..'
-                    model.model.save('model.bin')
+                    model.model.save(args.save_to + '.bin')
                 else:
                     patience += 1
                     print >>sys.stderr, 'hit patience %d' % patience
@@ -384,6 +391,7 @@ def get_bleu(references, hypotheses):
 
 def decode(model, data):
     hypotheses = []
+    begin_time = time.time()
     for src_sent, tgt_sent in data:
         src_sent_wids = word2id(src_sent, model.src_vocab)
         hyp = model.translate(src_sent_wids)[0]
@@ -393,7 +401,10 @@ def decode(model, data):
         print 'Target: ', ' '.join(tgt_sent)
         print 'Hypothesis: ', ' '.join(hyp.y)
 
+    elapsed = time.time() - begin_time
     bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
+
+    print >>sys.stderr, 'decode %d examples, took %d s' % (len(data), elapsed)
     return hypotheses, bleu_score
 
 def test(args):
