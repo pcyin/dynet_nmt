@@ -1,4 +1,4 @@
-model_name="model.de-en"
+model_name="model.de-en.de3w.en2w"
 python nmt.py \
 	--dynet-mem 10000 \
     --dynet-gpu \
@@ -7,6 +7,8 @@ python nmt.py \
     --save_to ${model_name} \
     --valid_niter 2500 \
     --beam_size 5 \
+    --src_vocab_size 30000 \
+    --tgt_vocab_size 20000 \
     --train_src en-de/train.en-de.low.filt.de \
     --train_tgt en-de/train.en-de.low.filt.en \
     --dev_src en-de/valid.en-de.low.de \
