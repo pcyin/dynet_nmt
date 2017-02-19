@@ -176,7 +176,8 @@ class NMT(object):
                 h_t = hyp.state.output()
                 ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
 
-                read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+                # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+                read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
                 y_t = W_y * read_out + b_y
                 p_t = dy.log_softmax(y_t).npvalue()
 
@@ -240,7 +241,8 @@ class NMT(object):
             h_t = s.output()
             ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
 
-            read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+            # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
             y_t = W_y * read_out + b_y
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
