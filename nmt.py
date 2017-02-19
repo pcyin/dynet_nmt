@@ -22,6 +22,7 @@ def init_config():
     parser.add_argument('--embed_size', default=512, type=int)
     parser.add_argument('--hidden_size', default=512, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
+    parser.add_argument('--dropout', default=0., type=float)
 
     parser.add_argument('--src_vocab_size', default=20000, type=int)
     parser.add_argument('--tgt_vocab_size', default=20000, type=int)
@@ -179,6 +180,8 @@ class NMT(object):
 
                 # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
                 read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+                if args.dropout > 0.:
+                    read_out = dy.dropout(read_out, args.dropout)
                 y_t = W_y * read_out + b_y
                 p_t = dy.log_softmax(y_t).npvalue()
 
