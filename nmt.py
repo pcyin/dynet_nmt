@@ -38,6 +38,7 @@ def init_config():
     parser.add_argument('--valid_niter', default=500, type=int)
     parser.add_argument('--model', default=None, type=str)
     parser.add_argument('--save_to', default='model', type=str)
+    parser.add_argument('--save_to_file', default=None, type=str)
     parser.add_argument('--patience', default=5, type=int)
 
     args = parser.parse_args()
@@ -421,7 +422,13 @@ def decode(model, data):
     elapsed = time.time() - begin_time
     bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
 
-    print >>sys.stderr, 'decode %d examples, took %d s' % (len(data), elapsed)
+    print >>sys.stderr, 'decoded %d examples, took %d s' % (len(data), elapsed)
+    if args.save_to_file:
+        print >> sys.stderr, 'save decoding results to %s' % args.save_to_file
+        with open(args.save_to_file, 'w') as f:
+            for hyp in hypotheses:
+                f.write(' '.join(hyp[1:-1]) + '\n')
+
     return hypotheses, bleu_score
 
 def test(args):
