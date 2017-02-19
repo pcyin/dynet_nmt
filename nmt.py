@@ -180,8 +180,6 @@ class NMT(object):
 
                 # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
                 read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
-                if args.dropout > 0.:
-                    read_out = dy.dropout(read_out, args.dropout)
                 y_t = W_y * read_out + b_y
                 p_t = dy.log_softmax(y_t).npvalue()
 
@@ -247,6 +245,8 @@ class NMT(object):
 
             # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+            if args.dropout > 0.:
+                read_out = dy.dropout(read_out, args.dropout)
             y_t = W_y * read_out + b_y
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
