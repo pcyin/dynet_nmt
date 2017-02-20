@@ -176,7 +176,7 @@ class NMT(object):
 
                 hyp.state = hyp.state.add_input(x)
                 h_t = hyp.state.output()
-                ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
+                ctx_t, alpha_t = self.attention_for_loop(src_encodings, h_t, batch_size=1)
 
                 # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
                 read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
@@ -241,7 +241,7 @@ class NMT(object):
             x = dy.concatenate([y_tm1_embed, ctx_tm1])
             s = s.add_input(x)
             h_t = s.output()
-            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
+            ctx_t, alpha_t = self.attention_for_loop(src_encodings, h_t, batch_size)
 
             # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
@@ -279,6 +279,24 @@ class NMT(object):
         att_weights = dy.softmax(att_weights)
 
         ctx = src_enc_all * att_weights
+
+        return ctx, att_weights
+
+    def attention_for_loop(self, src_encodings, h_t, batch_size):
+        W1_att_f = dy.parameter(self.W1_att_f)
+        W1_att_e = dy.parameter(self.W1_att_e)
+        W2_att = dy.parameter(self.W2_att)
+
+        att_weights = []
+        h_t_trans = W1_att_e * h_t
+        for i in xrange(len(src_encodings)):
+            src_enc_i = src_encodings[i]
+            att_hidden = dy.tanh(W1_att_f * src_enc_i + h_t_trans)
+            att_weight = W2_att * att_hidden
+            att_weights.append(att_weight)
+
+        att_weights = dy.softmax(dy.concatenate(att_weights))
+        ctx = dy.esum([src_enc * att_weight for src_enc, att_weight in zip(src_encodings, att_weights)])
 
         return ctx, att_weights
 
