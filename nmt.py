@@ -84,11 +84,12 @@ def build_id2word_vocab(vocab):
 
 
 class Hypothesis(object):
-    def __init__(self, state, y, ctx_tm1, score):
+    def __init__(self, state, y, ctx_tm1, score, alpha):
         self.state = state
         self.y = y
         self.ctx_tm1 = ctx_tm1
         self.score = score
+        self.alpha = alpha
 
 class NMT(object):
     # define dynet model for the encoder-decoder model
@@ -164,7 +165,8 @@ class NMT(object):
         hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)]),
                                  y=[self.tgt_vocab['<s>']],
                                  ctx_tm1=dy.vecInput(self.args.hidden_size * 2),
-                                 score=0.)]
+                                 score=0.,
+                                 alpha=[])]
 
         t = 0
         while len(completed_hypotheses) < beam_size and t < args.decode_max_time_step:
@@ -177,6 +179,9 @@ class NMT(object):
                 hyp.state = hyp.state.add_input(x)
                 h_t = hyp.state.output()
                 ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
+                
+                assert abs(1 - np.sum(alpha_t.npvalue())) < 1e-2, 'sum(alpha_t) != 1'
+                hyp.alpha.append(alpha_t.npvalue())
 
                 # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
                 read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
@@ -200,10 +205,12 @@ class NMT(object):
 
             for prev_hyp_id, word_id, hyp_score in zip(prev_hyp_ids, word_ids, new_hyp_scores):
                 prev_hyp = hypotheses[prev_hyp_id]
+                alpha = [np.copy(a) for a in prev_hyp.alpha]
                 hyp = Hypothesis(state=prev_hyp.state,
                                  y=prev_hyp.y + [word_id],
                                  ctx_tm1=prev_hyp.ctx_tm1,
-                                 score=hyp_score)
+                                 score=hyp_score,
+                                 alpha=alpha)
 
                 if word_id == self.tgt_vocab['</s>']:
                     completed_hypotheses.append(hyp)
@@ -217,6 +224,7 @@ class NMT(object):
 
         for hyp in completed_hypotheses:
             hyp.y = [self.tgt_vocab_id2word[i] for i in hyp.y]
+            assert len(hyp.y) == len(hyp.alpha) + 1, 'len(y) != len(alphas)'
 
         return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
@@ -373,7 +381,7 @@ def train(args):
                                                                                            cum_examples)
                 cum_loss = cum_examples = 0.
                 print >>sys.stderr, 'begin validation ...'
-                dev_hyps, dev_bleu = decode(model, dev_data)
+                dev_hyps, dev_bleu, dev_alphas = decode(model, dev_data)
                 print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
 
                 is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
@@ -412,15 +420,21 @@ def get_bleu(references, hypotheses):
 
 def decode(model, data):
     hypotheses = []
+    alphas = []
     begin_time = time.time()
     for src_sent, tgt_sent in data:
         src_sent_wids = word2id(src_sent, model.src_vocab)
         hyp = model.translate(src_sent_wids)[0]
         hypotheses.append(hyp.y)
+        alphas.append(hyp.alpha)
         print '*' * 50
         print 'Source: ', ' '.join(src_sent)
         print 'Target: ', ' '.join(tgt_sent)
         print 'Hypothesis: ', ' '.join(hyp.y)
+        assert len(hyp.alpha) + 1 == len(hyp.y)
+    
+    assert len(alphas) > 0, 'len(alphas) < 0'
+    np.savez(open(args.model + '_alpha.npz', 'w'), alpha=alphas)
 
     elapsed = time.time() - begin_time
     bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
@@ -432,7 +446,11 @@ def decode(model, data):
             for hyp in hypotheses:
                 f.write(' '.join(hyp[1:-1]) + '\n')
 
-    return hypotheses, bleu_score
+        #print >> sys.stderr, 'visualize alpha to folder image'
+        #for sent_id, (src_sent, tgt_sent) in enumerate(data):
+        #    visualize(src_sent, hypotheses[sent_id],   
+    return hypotheses, bleu_score, alphas
+
 
 def test(args):
     train_data_src = read_corpus(args.train_src)
@@ -452,10 +470,16 @@ def test(args):
 
     test_data = zip(test_data_src, test_data_tgt)
 
-    hypotheses, bleu_score = decode(model, test_data)
+    hypotheses, bleu_score, alphas = decode(model, test_data)
 
     bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
     print 'Corpus Level BLEU: %f' % bleu_score
+
+    np.savez(open(args.model + '_alpha.npzz', 'w'), alpha=alphas)
+    #import h5py
+    #h5 = h5py.File(args.model+'_alpha.h5', 'w')
+    #h5.create_dataset('alphas', data=alphas)
+    #h5.close()
 
 if __name__ == '__main__':
     args = init_config()
