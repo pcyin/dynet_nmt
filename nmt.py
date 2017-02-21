@@ -432,9 +432,6 @@ def decode(model, data):
         print 'Target: ', ' '.join(tgt_sent)
         print 'Hypothesis: ', ' '.join(hyp.y)
         assert len(hyp.alpha) + 1 == len(hyp.y)
-    
-    assert len(alphas) > 0, 'len(alphas) < 0'
-    np.savez(open(args.model + '_alpha.npz', 'w'), alpha=alphas)
 
     elapsed = time.time() - begin_time
     bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
@@ -446,9 +443,6 @@ def decode(model, data):
             for hyp in hypotheses:
                 f.write(' '.join(hyp[1:-1]) + '\n')
 
-        #print >> sys.stderr, 'visualize alpha to folder image'
-        #for sent_id, (src_sent, tgt_sent) in enumerate(data):
-        #    visualize(src_sent, hypotheses[sent_id],   
     return hypotheses, bleu_score, alphas
 
 
@@ -475,11 +469,7 @@ def test(args):
     bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
     print 'Corpus Level BLEU: %f' % bleu_score
 
-    np.savez(open(args.model + '_alpha.npzz', 'w'), alpha=alphas)
-    #import h5py
-    #h5 = h5py.File(args.model+'_alpha.h5', 'w')
-    #h5.create_dataset('alphas', data=alphas)
-    #h5.close()
+    np.savez(open(args.model + '_alpha.npz', 'w'), alpha=alphas)
 
 if __name__ == '__main__':
     args = init_config()
