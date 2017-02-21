@@ -22,6 +22,7 @@ def init_config():
     parser.add_argument('--embed_size', default=512, type=int)
     parser.add_argument('--hidden_size', default=512, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
+    parser.add_argument('--dropout', default=0., type=float)
 
     parser.add_argument('--src_vocab_size', default=20000, type=int)
     parser.add_argument('--tgt_vocab_size', default=20000, type=int)
@@ -107,11 +108,20 @@ class NMT(object):
 
         self.dec_builder = dy.GRUBuilder(1, args.embed_size + args.hidden_size * 2, args.hidden_size, model)
 
-        self.W_y = model.add_parameters((args.tgt_vocab_size, args.hidden_size + args.hidden_size * 2))
+        # target word embedding
+        self.W_y = model.add_parameters((args.tgt_vocab_size, args.embed_size))
         self.b_y = model.add_parameters((args.tgt_vocab_size))
+        self.b_y.zero()
 
+        # transformation of decoder hidden states and context vectors before reading out target words
+        self.W_h = model.add_parameters((args.embed_size, args.hidden_size + args.hidden_size * 2))
+        self.b_h = model.add_parameters((args.embed_size))
+        self.b_h.zero()
+
+        # transformation of context vectors at t_0 in decoding
         self.W_s = model.add_parameters((args.hidden_size, args.hidden_size * 2))
         self.b_s = model.add_parameters((args.hidden_size))
+        self.b_s.zero()
 
         self.W1_att_f = model.add_parameters((args.attention_size, args.hidden_size * 2))
         self.W1_att_e = model.add_parameters((args.attention_size, args.hidden_size))
@@ -145,10 +155,10 @@ class NMT(object):
 
         W_s = dy.parameter(self.W_s)
         b_s = dy.parameter(self.b_s)
-
+        W_h = dy.parameter(self.W_h)
+        b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
-
 
         completed_hypotheses = []
         hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)]),
@@ -168,7 +178,9 @@ class NMT(object):
                 h_t = hyp.state.output()
                 ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
 
-                y_t = dy.affine_transform([b_y, W_y, dy.concatenate([h_t, ctx_t])])
+                # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+                read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+                y_t = W_y * read_out + b_y
                 p_t = dy.log_softmax(y_t).npvalue()
 
                 hyp.ctx_tm1 = ctx_t
@@ -211,7 +223,8 @@ class NMT(object):
     def get_decode_loss(self, src_encodings, tgt_sents):
         W_s = dy.parameter(self.W_s)
         b_s = dy.parameter(self.b_s)
-
+        W_h = dy.parameter(self.W_h)
+        b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
 
@@ -230,7 +243,11 @@ class NMT(object):
             h_t = s.output()
             ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
 
-            y_t = dy.affine_transform([b_y, W_y, dy.concatenate([h_t, ctx_t])])
+            # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+            if args.dropout > 0.:
+                read_out = dy.dropout(read_out, args.dropout)
+            y_t = W_y * read_out + b_y
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             if 0 in mask_t:
