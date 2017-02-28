@@ -1,3 +1,4 @@
+import cProfile
 from collections import defaultdict, Counter, namedtuple
 from itertools import chain
 import numpy as np
@@ -19,8 +20,8 @@ def init_config():
 
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--beam_size', default=5, type=int)
-    parser.add_argument('--embed_size', default=512, type=int)
-    parser.add_argument('--hidden_size', default=512, type=int)
+    parser.add_argument('--embed_size', default=256, type=int)
+    parser.add_argument('--hidden_size', default=256, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
     parser.add_argument('--dropout', default=0., type=float)
 
@@ -103,10 +104,15 @@ class NMT(object):
         self.src_lookup = self.model.add_lookup_parameters((args.src_vocab_size, args.embed_size))
         self.tgt_lookup = self.model.add_lookup_parameters((args.tgt_vocab_size, args.embed_size))
 
-        self.enc_forward_builder = dy.GRUBuilder(1, args.embed_size, args.hidden_size, model)
-        self.enc_backward_builder = dy.GRUBuilder(1, args.embed_size, args.hidden_size, model)
+        self.enc_forward_builder = dy.LSTMBuilder(1, args.embed_size, args.hidden_size, model)
+        self.enc_backward_builder = dy.LSTMBuilder(1, args.embed_size, args.hidden_size, model)
+        self.dec_builder = dy.LSTMBuilder(1, args.embed_size + args.hidden_size * 2, args.hidden_size, model)
 
-        self.dec_builder = dy.GRUBuilder(1, args.embed_size + args.hidden_size * 2, args.hidden_size, model)
+        # set recurrent dropout
+        if args.dropout > 0.:
+            self.enc_forward_builder.set_dropout(args.dropout)
+            self.enc_backward_builder.set_dropout(args.dropout)
+            self.dec_builder.set_dropout(args.dropout)
 
         # target word embedding
         self.W_y = model.add_parameters((args.tgt_vocab_size, args.embed_size))
@@ -138,12 +144,22 @@ class NMT(object):
         src_words_embeds = [dy.lookup_batch(self.src_lookup, wids) for wids in src_words]
         src_words_embeds_reversed = src_words_embeds[::-1]
 
-        forward_encodings = forward_state.transduce(src_words_embeds)
-        backward_encodings = backward_state.transduce(src_words_embeds_reversed)[::-1]
+        forward_states = forward_state.add_inputs(src_words_embeds)
+        backward_states = backward_state.add_inputs(src_words_embeds_reversed)[::-1]
 
-        src_encodings = [dy.concatenate(list(t)) for t in zip(forward_encodings, backward_encodings)]
+        src_encodings = []
+        forward_cells = []
+        backward_cells = []
+        for forward_state, backward_state in zip(forward_states, backward_states):
+            fwd_cell, fwd_enc = forward_state.s()
+            bak_cell, bak_enc = backward_state.s()
 
-        return src_encodings
+            src_encodings.append(dy.concatenate([fwd_enc, bak_enc]))
+            forward_cells.append(fwd_cell)
+            backward_cells.append(bak_cell)
+
+        decoder_init = dy.concatenate([forward_cells[-1], backward_cells[0]])
+        return src_encodings, decoder_init
 
     def translate(self, src_sent, beam_size=None):
         if not type(src_sent[0]) == list:
@@ -151,7 +167,7 @@ class NMT(object):
         if not beam_size:
             beam_size = args.beam_size
 
-        src_encodings = self.encode(src_sent)
+        src_encodings, decoder_init = self.encode(src_sent)
 
         W_s = dy.parameter(self.W_s)
         b_s = dy.parameter(self.b_s)
@@ -161,7 +177,7 @@ class NMT(object):
         b_y = dy.parameter(self.b_y)
 
         completed_hypotheses = []
-        hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)]),
+        hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * decoder_init + b_s), dy.vecInput(args.hidden_size)]),
                                  y=[self.tgt_vocab['<s>']],
                                  ctx_tm1=dy.vecInput(self.args.hidden_size * 2),
                                  score=0.)]
@@ -220,7 +236,7 @@ class NMT(object):
 
         return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
-    def get_decode_loss(self, src_encodings, tgt_sents):
+    def get_decode_loss(self, src_encodings, decoder_init, tgt_sents):
         W_s = dy.parameter(self.W_s)
         b_s = dy.parameter(self.b_s)
         W_h = dy.parameter(self.W_h)
@@ -231,7 +247,7 @@ class NMT(object):
         tgt_words, tgt_masks = input_transpose(tgt_sents)
         batch_size = len(tgt_sents)
 
-        s = self.dec_builder.initial_state([dy.tanh(W_s * src_encodings[-1] + b_s)])
+        s = self.dec_builder.initial_state([dy.tanh(W_s * decoder_init + b_s), dy.vecInput(args.hidden_size)])
         ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
         losses = []
 
@@ -283,8 +299,8 @@ class NMT(object):
         return ctx, att_weights
 
     def get_encdec_loss(self, src_sents, tgt_sents):
-        src_encodings = self.encode(src_sents)
-        loss = self.get_decode_loss(src_encodings, tgt_sents)
+        src_encodings, decoder_init = self.encode(src_sents)
+        loss = self.get_decode_loss(src_encodings, decoder_init, tgt_sents)
 
         return loss
 
@@ -463,6 +479,7 @@ if __name__ == '__main__':
     if args.mode == 'train':
         train(args)
     elif args.mode == 'test':
-        test(args)
+        # test(args)
+        cProfile.run('test(args)', sort=2)
 
 
