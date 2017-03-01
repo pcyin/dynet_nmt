@@ -8,7 +8,7 @@ import argparse
 import dynet as dy
 import cPickle as pkl
 import time
-from nltk.translate.bleu_score import corpus_bleu
+from nltk.translate.bleu_score import corpus_bleu, sentence_bleu
 
 def init_config():
     parser = argparse.ArgumentParser()
@@ -161,7 +161,7 @@ class NMT(object):
         decoder_init = dy.concatenate([forward_cells[-1], backward_cells[0]])
         return src_encodings, decoder_init
 
-    def translate(self, src_sent, beam_size=None):
+    def translate(self, src_sent, beam_size=None, to_word=True):
         if not type(src_sent[0]) == list:
             src_sent = [src_sent]
         if not beam_size:
@@ -232,8 +232,9 @@ class NMT(object):
         if len(completed_hypotheses) == 0:
             completed_hypotheses = [hypotheses[0]]
 
-        for hyp in completed_hypotheses:
-            hyp.y = [self.tgt_vocab_id2word[i] for i in hyp.y]
+        if to_word:
+            for hyp in completed_hypotheses:
+                hyp.y = [self.tgt_vocab_id2word[i] for i in hyp.y]
 
         return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
@@ -266,7 +267,7 @@ class NMT(object):
             if args.dropout > 0.:
                 read_out = dy.dropout(read_out, args.dropout)
             y_t = W_y * read_out + b_y
-            loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
+            loss_t = -dy.pick_batch(dy.log(dy.softmax(y_t)), y_ref_t) # dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             if 0 in mask_t:
                 mask_expr = dy.inputVector(mask_t)
@@ -277,7 +278,7 @@ class NMT(object):
             ctx_tm1 = ctx_t
 
         loss = dy.esum(losses)
-        loss = dy.sum_batches(loss) / batch_size
+        # loss = dy.sum_batches(loss) / batch_size
 
         return loss
 
@@ -303,6 +304,32 @@ class NMT(object):
     def get_encdec_loss(self, src_sents, tgt_sents):
         src_encodings, decoder_init = self.encode(src_sents)
         loss = self.get_decode_loss(src_encodings, decoder_init, tgt_sents)
+
+        return loss
+
+    def get_rl_loss(self, src_sents, tgt_sents):
+        # sample using beam search
+        rewards = []
+        loss_src_sents = []
+        loss_tgt_sents = []
+        for src_sent, tgt_sent in zip(src_sents, tgt_sents):
+            tgt_samples = self.translate(src_sent, to_word=False)
+            for hyp in tgt_samples:
+                tgt_sent_pred = hyp.y
+                reward = sentence_bleu([tgt_sent], tgt_sent_pred)
+
+                loss_src_sents.append(src_sent)
+                loss_tgt_sents.append(tgt_sent_pred)
+                rewards.append(reward)
+
+        # compute loss
+        batch_size = len(rewards)
+        loss = self.get_encdec_loss(loss_src_sents, loss_tgt_sents)
+        r = dy.inputVector(rewards)
+        r = dy.reshape(r, (1, ), batch_size)
+        loss = r * loss
+
+        loss = dy.sum_batches(loss) / batch_size
 
         return loss
 
@@ -409,6 +436,7 @@ def train(args):
                         exit(0)
 
             loss = model.get_encdec_loss(src_sents_wids, tgt_sents_wids)
+            loss = dy.sum_batches(loss)
             loss_val = loss.value()
 
             cum_loss += loss_val * batch_size
@@ -416,6 +444,72 @@ def train(args):
 
             ppl = np.exp(loss_val * batch_size / sum(len(s) for s in tgt_sents))
             print 'epoch %d, iter %d, loss=%f, ppl=%f' % (epoch, train_iter, loss_val, ppl)
+
+            loss.backward()
+            trainer.update()
+
+
+def train_reinforce(args):
+    train_data_src = read_corpus(args.train_src)
+    train_data_tgt = read_corpus(args.train_tgt)
+
+    dev_data_src = read_corpus(args.dev_src)
+    dev_data_tgt = read_corpus(args.dev_tgt)
+
+    src_vocab = build_vocab(train_data_src, args.src_vocab_size)
+    tgt_vocab = build_vocab(train_data_tgt, args.tgt_vocab_size)
+
+    src_vocab_id2word = build_id2word_vocab(src_vocab)
+    tgt_vocab_id2word = build_id2word_vocab(tgt_vocab)
+
+    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
+    if args.model:
+        model.load(args.model)
+
+    trainer = dy.AdamTrainer(model.model)
+
+    train_data = zip(train_data_src, train_data_tgt)
+    dev_data = zip(dev_data_src, dev_data_tgt)
+    train_iter = patience = cum_loss = cum_examples = epoch = 0
+    hist_valid_scores = []
+    while True:
+        epoch += 1
+        for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
+            train_iter += 1
+            src_sents_wids = word2id(src_sents, src_vocab)
+            tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
+            batch_size = len(src_sents)
+
+            if train_iter % args.valid_niter == 0:
+                print >>sys.stderr, 'epoch %d, iter %d, cum. loss %f, cum. examples %d' % (epoch, train_iter,
+                                                                                           cum_loss / cum_examples,
+                                                                                           cum_examples)
+                cum_loss = cum_examples = 0.
+                print >>sys.stderr, 'begin validation ...'
+                dev_hyps, dev_bleu = decode(model, dev_data)
+                print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
+
+                is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
+                hist_valid_scores.append(dev_bleu)
+
+                if is_better:
+                    patience = 0
+                    print >>sys.stderr, 'save currently the best model ..'
+                    model.model.save(args.save_to + '.bin')
+                else:
+                    patience += 1
+                    print >>sys.stderr, 'hit patience %d' % patience
+                    if patience == args.patience:
+                        print 'early stop!'
+                        exit(0)
+
+            loss = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
+            loss_val = loss.value()
+
+            cum_loss += loss_val
+            cum_examples += batch_size
+
+            print 'epoch %d, iter %d, loss=%f' % (epoch, train_iter, loss_val)
 
             loss.backward()
             trainer.update()
@@ -479,9 +573,10 @@ if __name__ == '__main__':
     args = init_config()
     print >>sys.stderr, args
     if args.mode == 'train':
-        train(args)
+        # train(args)
+        train_reinforce(args)
     elif args.mode == 'test':
-        # test(args)
-        cProfile.run('test(args)', sort=2)
+        test(args)
+        # cProfile.run('test(args)', sort=2)
 
 
