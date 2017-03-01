@@ -481,7 +481,7 @@ if __name__ == '__main__':
     if args.mode == 'train':
         train(args)
     elif args.mode == 'test':
-        # test(args)
-        cProfile.run('test(args)', sort=2)
+        test(args)
+        # cProfile.run('test(args)', sort=2)
 
 
