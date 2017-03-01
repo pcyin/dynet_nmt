@@ -177,7 +177,8 @@ class NMT(object):
         b_y = dy.parameter(self.b_y)
 
         completed_hypotheses = []
-        hypotheses = [Hypothesis(state=self.dec_builder.initial_state([dy.tanh(W_s * decoder_init + b_s), dy.vecInput(args.hidden_size)]),
+        decoder_init_cell = W_s * decoder_init + b_s
+        hypotheses = [Hypothesis(state=self.dec_builder.initial_state([decoder_init_cell, dy.tanh(decoder_init_cell)]),
                                  y=[self.tgt_vocab['<s>']],
                                  ctx_tm1=dy.vecInput(self.args.hidden_size * 2),
                                  score=0.)]
@@ -247,7 +248,8 @@ class NMT(object):
         tgt_words, tgt_masks = input_transpose(tgt_sents)
         batch_size = len(tgt_sents)
 
-        s = self.dec_builder.initial_state([dy.tanh(W_s * decoder_init + b_s), dy.vecInput(args.hidden_size)])
+        decoder_init_cell = W_s * decoder_init + b_s
+        s = self.dec_builder.initial_state([decoder_init_cell, dy.tanh(decoder_init_cell)])
         ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
         losses = []
 
