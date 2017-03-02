@@ -238,6 +238,75 @@ class NMT(object):
 
         return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
+    def sample(self, src_sent, sample_num=5, to_word=False):
+        if not type(src_sent[0]) == list:
+            src_sent = [src_sent]
+
+        src_encodings, decoder_init = self.encode(src_sent)
+
+        W_s = dy.parameter(self.W_s)
+        b_s = dy.parameter(self.b_s)
+        W_h = dy.parameter(self.W_h)
+        b_h = dy.parameter(self.b_h)
+        W_y = dy.parameter(self.W_y)
+        b_y = dy.parameter(self.b_y)
+
+        decoder_init_cell = W_s * decoder_init + b_s
+        decoder_init_state = dy.tanh(decoder_init_cell)
+
+        decoder_init_cell = decoder_init_cell.npvalue()
+        decoder_init_state = decoder_init_state.npvalue()
+
+        decoder_init_cell = dy.inputMatrix(np.tile(decoder_init_cell, (sample_num, 1)).flatten(), (args.hidden_size, sample_num))
+        decoder_init_state = dy.inputMatrix(np.tile(decoder_init_state, (sample_num, 1)).flatten(), (args.hidden_size, sample_num))
+
+        decoder_init_cell = dy.reshape(decoder_init_cell, (args.hidden_size, ), sample_num)
+        decoder_init_state = dy.reshape(decoder_init_state, (args.hidden_size, ), sample_num)
+
+        ctx_tm1 = dy.reshape(dy.matInput(self.args.hidden_size * 2, sample_num), (self.args.hidden_size * 2, ),
+                             batch_size=sample_num)
+        s = self.dec_builder.initial_state([decoder_init_cell, decoder_init_state])
+
+        samples = [[self.tgt_vocab['<s>'] for i in xrange(sample_num)]]
+        completed_samples = []
+        tgt_word_ids = range(args.tgt_vocab_size)
+        eos = self.tgt_vocab['</s>']
+
+        t = 0
+        while len(completed_samples) < sample_num and t < args.decode_max_time_step:
+            t += 1
+
+            y_tm1 = samples[-1]
+            y_tm1_embed = dy.lookup_batch(self.tgt_lookup, y_tm1)
+            x = dy.concatenate([y_tm1_embed, ctx_tm1])
+            s = s.add_input(x)
+            h_t = s.output()
+            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=sample_num)
+
+            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+            if args.dropout > 0.:
+                read_out = dy.dropout(read_out, args.dropout)
+            # affine transformation tends to give (xxx, 1, batch_size) outputs
+            p_t = dy.softmax(dy.affine_transform([b_y, W_y, read_out])).npvalue().reshape((-1, sample_num))
+
+            cur_samples = []
+            for sid, prev_word in enumerate(y_tm1):
+                # draw a sample
+                if prev_word != eos:
+                    y_t = np.random.choice(tgt_word_ids, p=p_t[:, sid] / p_t[:, sid].sum())
+                    cur_samples.append(y_t)
+                    if y_t == eos:
+                        completed_samples.append([samples[i][sid] for i in xrange(t)] + [y_t])
+                else:
+                    cur_samples.append(eos)
+
+            samples.append(cur_samples)
+
+        if to_word:
+            completed_samples = word2id(completed_samples, self.tgt_vocab_id2word)
+
+        return completed_samples
+
     def get_decode_loss(self, src_encodings, decoder_init, tgt_sents):
         W_s = dy.parameter(self.W_s)
         b_s = dy.parameter(self.b_s)
@@ -266,8 +335,8 @@ class NMT(object):
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
             if args.dropout > 0.:
                 read_out = dy.dropout(read_out, args.dropout)
-            y_t = W_y * read_out + b_y
-            loss_t = -dy.pick_batch(dy.log(dy.softmax(y_t)), y_ref_t) # dy.pickneglogsoftmax_batch(y_t, y_ref_t)
+            y_t = dy.affine_transform([b_y, W_y, read_out])
+            loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             if 0 in mask_t:
                 mask_expr = dy.inputVector(mask_t)
@@ -313,13 +382,14 @@ class NMT(object):
         loss_src_sents = []
         loss_tgt_sents = []
         for src_sent, tgt_sent in zip(src_sents, tgt_sents):
-            tgt_samples = self.translate(src_sent, to_word=False)
+            # beam_samples = self.translate(src_sent)
+            tgt_samples = self.sample(src_sent, sample_num=args.beam_size, to_word=False)
+            # tgt_samples_words = word2id(tgt_samples, self.tgt_vocab_id2word)
             for hyp in tgt_samples:
-                tgt_sent_pred = hyp.y
-                reward = sentence_bleu([tgt_sent], tgt_sent_pred)
+                reward = sentence_bleu([tgt_sent], hyp)
 
                 loss_src_sents.append(src_sent)
-                loss_tgt_sents.append(tgt_sent_pred)
+                loss_tgt_sents.append(hyp)
                 rewards.append(reward)
 
         # compute loss
