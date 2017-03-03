@@ -134,6 +134,9 @@ class NMT(object):
         self.W1_att_e = model.add_parameters((args.attention_size, args.hidden_size))
         self.W2_att = model.add_parameters((1, args.attention_size))
 
+        # baseline for REINFROCE
+        self.W_b = model.add_parameters((1, args.hidden_size))
+
     def encode(self, src_sents):
         dy.renew_cg()
 
@@ -352,6 +355,68 @@ class NMT(object):
 
         return loss
 
+    def get_rl_sample_loss(self, src_encodings, decoder_init, tgt_sents, rewards):
+        W_s = dy.parameter(self.W_s)
+        b_s = dy.parameter(self.b_s)
+        W_h = dy.parameter(self.W_h)
+        b_h = dy.parameter(self.b_h)
+        W_y = dy.parameter(self.W_y)
+        b_y = dy.parameter(self.b_y)
+        W_b = dy.parameter(self.W_b)
+
+        tgt_words, tgt_masks = input_transpose(tgt_sents)
+        batch_size = len(tgt_sents)
+
+        decoder_init_cell = W_s * decoder_init + b_s
+        s = self.dec_builder.initial_state([decoder_init_cell, dy.tanh(decoder_init_cell)])
+        ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
+        losses = []
+
+        rewards_expr = dy.inputVector(rewards)
+        rewards_expr =dy.reshape(rewards_expr, (1, ), batch_size)
+        losses_b = []
+
+        # start from <S>, until y_{T-1}
+        for t, (y_ref_t, mask_t) in enumerate(zip(tgt_words[1:], tgt_masks[1:]), start=1):
+            y_tm1_embed = dy.lookup_batch(self.tgt_lookup, tgt_words[t - 1])
+            x = dy.concatenate([y_tm1_embed, ctx_tm1])
+            s = s.add_input(x)
+            h_t = s.output()
+            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
+
+            # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
+            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+            if args.dropout > 0.:
+                read_out = dy.dropout(read_out, args.dropout)
+            y_t = dy.affine_transform([b_y, W_y, read_out])
+            loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
+
+            # compute baseline
+            r_b = W_b * h_t
+            # objective for baseline - MSE
+            loss_b = dy.square(r_b - rewards_expr)
+
+            if 0 in mask_t:
+                mask_expr = dy.inputVector(mask_t)
+                mask_expr = dy.reshape(mask_expr, (1, ), batch_size)
+
+                loss_t = loss_t * mask_expr
+                loss_b = loss_b * mask_expr
+
+            loss_t = (rewards_expr - dy.nobackprop(r_b)) * loss_t
+
+            losses.append(loss_t)
+            losses_b.append(loss_b)
+
+            ctx_tm1 = ctx_t
+
+        loss = dy.esum(losses)
+        loss = dy.sum_batches(loss) / batch_size
+
+        loss_b = dy.sum_batches(dy.esum(losses_b)) / np.sum(tgt_masks)
+
+        return loss, loss_b
+
     def attention(self, src_encodings, h_t, batch_size):
         W1_att_f = dy.parameter(self.W1_att_f)
         W1_att_e = dy.parameter(self.W1_att_e)
@@ -394,15 +459,10 @@ class NMT(object):
                 rewards.append(reward)
 
         # compute loss
-        batch_size = len(rewards)
-        loss = self.get_encdec_loss(loss_src_sents, loss_tgt_sents)
-        r = dy.inputVector(rewards)
-        r = dy.reshape(r, (1, ), batch_size)
-        loss = r * loss
+        src_encodings, decoder_init = self.encode(loss_src_sents)
+        loss, loss_b = self.get_rl_sample_loss(src_encodings, decoder_init, loss_tgt_sents, rewards)
 
-        loss = dy.sum_batches(loss) / batch_size
-
-        return loss
+        return loss, loss_b
 
     def load(self, path):
         print >>sys.stderr, 'loading model from: %s' % path
@@ -538,6 +598,7 @@ def train_reinforce(args):
         model.load(args.model)
 
     trainer = dy.SimpleSGDTrainer(model.model, 0.001)
+    baseline_trainer = dy.AdamTrainer(model.model)
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
@@ -575,15 +636,19 @@ def train_reinforce(args):
                         print 'early stop!'
                         exit(0)
 
-            loss = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
+            loss, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
             loss_val = loss.value()
+            loss_b_val = loss_b.value()
 
             cum_loss += loss_val
             cum_examples += batch_size
 
-            print 'epoch %d, iter %d, loss=%f' % (epoch, train_iter, loss_val)
+            print 'epoch %d, iter %d, loss=%f, baseline loss=%f' % (epoch, train_iter, loss_val, loss_b_val)
 
             loss.backward()
+            loss_b.backward()
+
+            baseline_trainer.update()
 
             if update_batch % 20 == 0:
                 print >>sys.stderr, 'iter %d, update trainer' % train_iter
