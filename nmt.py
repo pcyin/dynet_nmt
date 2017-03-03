@@ -20,6 +20,7 @@ def init_config():
 
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--beam_size', default=5, type=int)
+    parser.add_argument('--sample_size', default=10, type=int)
     parser.add_argument('--embed_size', default=256, type=int)
     parser.add_argument('--hidden_size', default=256, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
@@ -383,7 +384,7 @@ class NMT(object):
         loss_tgt_sents = []
         for src_sent, tgt_sent in zip(src_sents, tgt_sents):
             # beam_samples = self.translate(src_sent)
-            tgt_samples = self.sample(src_sent, sample_num=args.beam_size, to_word=False)
+            tgt_samples = self.sample(src_sent, sample_num=args.sample_size, to_word=False)
             # tgt_samples_words = word2id(tgt_samples, self.tgt_vocab_id2word)
             for hyp in tgt_samples:
                 reward = sentence_bleu([tgt_sent], hyp)
@@ -536,16 +537,17 @@ def train_reinforce(args):
     if args.model:
         model.load(args.model)
 
-    trainer = dy.AdamTrainer(model.model)
+    trainer = dy.SimpleSGDTrainer(model.model, 0.001)
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = patience = cum_loss = cum_examples = epoch = 0
+    train_iter = patience = cum_loss = cum_examples = epoch = update_batch = 0
     hist_valid_scores = []
     while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
             train_iter += 1
+            update_batch += 1
             src_sents_wids = word2id(src_sents, src_vocab)
             tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
             batch_size = len(src_sents)
@@ -582,7 +584,11 @@ def train_reinforce(args):
             print 'epoch %d, iter %d, loss=%f' % (epoch, train_iter, loss_val)
 
             loss.backward()
-            trainer.update()
+
+            if update_batch % 20 == 0:
+                print >>sys.stderr, 'iter %d, update trainer' % train_iter
+                trainer.update()
+                update_batch = 0
 
 
 def get_bleu(references, hypotheses):
