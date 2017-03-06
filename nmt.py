@@ -305,6 +305,7 @@ class NMT(object):
                     cur_samples.append(eos)
 
             samples.append(cur_samples)
+            ctx_tm1 = ctx_t
 
         if to_word:
             completed_samples = word2id(completed_samples, self.tgt_vocab_id2word)
@@ -451,6 +452,14 @@ class NMT(object):
             # beam_samples = self.translate(src_sent)
             tgt_samples = self.sample(src_sent, sample_num=args.sample_size, to_word=False)
             # tgt_samples_words = word2id(tgt_samples, self.tgt_vocab_id2word)
+
+            # print '****** beam search results ******'
+            # for hyp in beam_samples:
+            #     print ' '.join(hyp.y)
+            # print '****** sampled results ******'
+            # for hyp in tgt_samples_words:
+            #     print ' '.join(hyp)
+
             for hyp in tgt_samples:
                 reward = sentence_bleu([tgt_sent], hyp)
 
