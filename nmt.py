@@ -607,7 +607,6 @@ def train_reinforce(args):
         model.load(args.model)
 
     trainer = dy.SimpleSGDTrainer(model.model, 0.001)
-    baseline_trainer = dy.AdamTrainer(model.model)
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
@@ -645,7 +644,8 @@ def train_reinforce(args):
                         print 'early stop!'
                         exit(0)
 
-            loss, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
+            loss_r, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
+            loss = loss_r + loss_b
             loss_val = loss.value()
             loss_b_val = loss_b.value()
 
@@ -655,9 +655,6 @@ def train_reinforce(args):
             print 'epoch %d, iter %d, loss=%f, baseline loss=%f' % (epoch, train_iter, loss_val, loss_b_val)
 
             loss.backward()
-            loss_b.backward()
-
-            baseline_trainer.update()
 
             if update_batch % 20 == 0:
                 print >>sys.stderr, 'iter %d, update trainer' % train_iter
@@ -671,6 +668,7 @@ def get_bleu(references, hypotheses):
                              [hyp[1:-1] for hyp in hypotheses])
 
     return bleu_score
+
 
 def decode(model, data):
     hypotheses = []
