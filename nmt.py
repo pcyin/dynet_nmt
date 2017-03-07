@@ -135,7 +135,12 @@ class NMT(object):
         self.W2_att = model.add_parameters((1, args.attention_size))
 
         # baseline for REINFROCE
-        self.W_b = model.add_parameters((1, args.hidden_size))
+        self.W1_b = model.add_parameters((50, args.hidden_size))
+        self.b1_b = model.add_parameters((50))
+        self.b1_b.zero()
+        self.W2_b = model.add_parameters((1, 50))
+        self.b2_b = model.add_parameters((1))
+        self.b2_b.zero()
 
     def encode(self, src_sents):
         dy.renew_cg()
@@ -363,7 +368,11 @@ class NMT(object):
         b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
-        W_b = dy.parameter(self.W_b)
+
+        W1_b = dy.parameter(self.W1_b)
+        b1_b = dy.parameter(self.b1_b)
+        W2_b = dy.parameter(self.W2_b)
+        b2_b = dy.parameter(self.b2_b)
 
         tgt_words, tgt_masks = input_transpose(tgt_sents)
         batch_size = len(tgt_sents)
@@ -393,7 +402,7 @@ class NMT(object):
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             # compute baseline
-            r_b = W_b * h_t
+            r_b = self.get_rl_baseline(h_t, W1_b, b1_b, W2_b, b2_b)
             # objective for baseline - MSE
             loss_b = dy.square(r_b - rewards_expr)
 
@@ -417,6 +426,15 @@ class NMT(object):
         loss_b = dy.sum_batches(dy.esum(losses_b)) / np.sum(tgt_masks)
 
         return loss, loss_b
+
+    def get_rl_baseline(self, h_t, *params):
+        W1_b, b1_b, W2_b, b2_b = params
+
+        h_t = dy.nobackprop(h_t)
+        h = dy.tanh(W1_b * h_t + b1_b)
+        b = dy.tanh(W2_b * h + b2_b)
+
+        return b
 
     def attention(self, src_encodings, h_t, batch_size):
         W1_att_f = dy.parameter(self.W1_att_f)
