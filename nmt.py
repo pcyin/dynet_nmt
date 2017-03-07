@@ -17,7 +17,7 @@ def init_config():
     parser.add_argument('--dynet-seed', default=914808182, type=int)
 
     parser.add_argument('--mode', choices=['train', 'test'], default='train')
-
+    parser.add_argument('--train_mode', choices=['ml', 'rl'], default='ml')
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--beam_size', default=5, type=int)
     parser.add_argument('--sample_size', default=10, type=int)
@@ -52,6 +52,7 @@ def init_config():
         import _gdynet as dy
 
     return args
+
 
 def read_corpus(file_path):
     data = []
@@ -92,15 +93,64 @@ class Hypothesis(object):
         self.ctx_tm1 = ctx_tm1
         self.score = score
 
+
 class NMT(object):
     # define dynet model for the encoder-decoder model
-    def __init__(self, args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word):
-        model = self.model = dy.Model()
+    def __init__(self, args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, load_from=None, load_mode=None):
         self.args = args
+
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
+
         self.src_vocab_id2word = src_vocab_id2word
         self.tgt_vocab_id2word = tgt_vocab_id2word
+
+        model = self.model = dy.Model()
+
+        if load_from is None:
+            self.create_ml_parameters()
+            self.create_rl_parameters()
+        else:
+            assert load_mode in ['ml', 'rl']
+            params = model.load(load_from)
+
+            if load_mode == 'ml':
+                self.src_lookup, self.tgt_lookup, \
+                self.enc_forward_builder, self.enc_backward_builder, self.dec_builder, \
+                self.W_y, self.b_y, \
+                self.W_h, self.b_h, \
+                self.W_s, self.b_s, \
+                self.W1_att_f, self.W1_att_e, self.W2_att = params
+
+                self.create_rl_parameters()
+            elif load_mode == 'rl':
+                self.src_lookup, self.tgt_lookup, \
+                self.enc_forward_builder, self.enc_backward_builder, self.dec_builder, \
+                self.W_y, self.b_y, \
+                self.W_h, self.b_h, \
+                self.W_s, self.b_s, \
+                self.W1_att_f, self.W1_att_e, self.W2_att, \
+                self.W1_b, self.b1_b, self.W2_b, self.b2_b = params
+
+        # set model parameters
+
+        # set recurrent dropout
+        if args.dropout > 0.:
+            self.enc_forward_builder.set_dropout(args.dropout)
+            self.enc_backward_builder.set_dropout(args.dropout)
+            self.dec_builder.set_dropout(args.dropout)
+
+        self.ml_params = [self.src_lookup, self.tgt_lookup,
+                          self.enc_forward_builder, self.enc_backward_builder, self.dec_builder,
+                          self.W_y, self.b_y,
+                          self.W_h, self.b_h,
+                          self.W_s, self.b_s,
+                          self.W1_att_f, self.W1_att_e, self.W2_att]
+
+        self.rl_params = [self.W1_b, self.b1_b, self.W2_b, self.b2_b]
+
+    def create_ml_parameters(self):
+        model = self.model
 
         self.src_lookup = self.model.add_lookup_parameters((args.src_vocab_size, args.embed_size))
         self.tgt_lookup = self.model.add_lookup_parameters((args.tgt_vocab_size, args.embed_size))
@@ -108,12 +158,6 @@ class NMT(object):
         self.enc_forward_builder = dy.LSTMBuilder(1, args.embed_size, args.hidden_size, model)
         self.enc_backward_builder = dy.LSTMBuilder(1, args.embed_size, args.hidden_size, model)
         self.dec_builder = dy.LSTMBuilder(1, args.embed_size + args.hidden_size * 2, args.hidden_size, model)
-
-        # set recurrent dropout
-        if args.dropout > 0.:
-            self.enc_forward_builder.set_dropout(args.dropout)
-            self.enc_backward_builder.set_dropout(args.dropout)
-            self.dec_builder.set_dropout(args.dropout)
 
         # target word embedding
         self.W_y = model.add_parameters((args.tgt_vocab_size, args.embed_size))
@@ -133,6 +177,9 @@ class NMT(object):
         self.W1_att_f = model.add_parameters((args.attention_size, args.hidden_size * 2))
         self.W1_att_e = model.add_parameters((args.attention_size, args.hidden_size))
         self.W2_att = model.add_parameters((1, args.attention_size))
+
+    def create_rl_parameters(self):
+        model = self.model
 
         # baseline for REINFROCE
         self.W1_b = model.add_parameters((50, args.hidden_size))
@@ -491,9 +538,14 @@ class NMT(object):
 
         return loss, loss_b
 
-    def load(self, path):
-        print >>sys.stderr, 'loading model from: %s' % path
-        self.model.load(path)
+    def save(self, path, mode='ml'):
+        assert mode in ['ml', 'rl']
+        if mode == 'ml':
+            print >>sys.stderr, 'save parameters related to maximum likelihood training to %s' % path
+            self.model.save(path, self.ml_params)
+        elif mode == 'rl':
+            print >> sys.stderr, 'save all model parameters to %s' % path
+            self.model.save(path, self.ml_params + self.rl_params)
 
 
 def batch_slice(data, batch_size):
@@ -585,7 +637,7 @@ def train(args):
                 if is_better:
                     patience = 0
                     print >>sys.stderr, 'save currently the best model ..'
-                    model.model.save(args.save_to + '.bin')
+                    model.model.save(args.save_to, mode='ml')
                 else:
                     patience += 1
                     print >>sys.stderr, 'hit patience %d' % patience
@@ -594,7 +646,7 @@ def train(args):
                         exit(0)
 
             loss = model.get_encdec_loss(src_sents_wids, tgt_sents_wids)
-            loss = dy.sum_batches(loss)
+            loss = dy.sum_batches(loss) / batch_size
             loss_val = loss.value()
 
             cum_loss += loss_val * batch_size
@@ -620,9 +672,10 @@ def train_reinforce(args):
     src_vocab_id2word = build_id2word_vocab(src_vocab)
     tgt_vocab_id2word = build_id2word_vocab(tgt_vocab)
 
-    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
     if args.model:
-        model.load(args.model)
+        model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, args.model, load_mode='ml')
+    else:
+        model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
 
     trainer = dy.SimpleSGDTrainer(model.model, 0.001)
 
@@ -630,6 +683,8 @@ def train_reinforce(args):
     dev_data = zip(dev_data_src, dev_data_tgt)
     train_iter = patience = cum_loss = cum_examples = epoch = update_batch = 0
     hist_valid_scores = []
+
+    print 'begin REINFORCE training'
     while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
@@ -712,6 +767,7 @@ def decode(model, data):
 
     return hypotheses, bleu_score
 
+
 def test(args):
     train_data_src = read_corpus(args.train_src)
     train_data_tgt = read_corpus(args.train_tgt)
@@ -725,8 +781,7 @@ def test(args):
     test_data_src = read_corpus(args.test_src)
     test_data_tgt = read_corpus(args.test_tgt)
 
-    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
-    model.load(args.model)
+    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, args.model)
 
     test_data = zip(test_data_src, test_data_tgt)
 
@@ -735,12 +790,16 @@ def test(args):
     bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
     print 'Corpus Level BLEU: %f' % bleu_score
 
+
 if __name__ == '__main__':
     args = init_config()
     print >>sys.stderr, args
     if args.mode == 'train':
-        # train(args)
-        train_reinforce(args)
+        if args.train_mode == 'ml':
+            train(args)
+        elif args.train_mode == 'rl':
+            train_reinforce(args)
+        # cProfile.run('train_reinforce(args)', sort=2)
     elif args.mode == 'test':
         test(args)
         # cProfile.run('test(args)', sort=2)
