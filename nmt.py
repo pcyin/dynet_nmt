@@ -640,7 +640,7 @@ def train(args):
                 if is_better:
                     patience = 0
                     print >>sys.stderr, 'save currently the best model ..'
-                    model.model.save(args.save_to, mode='ml')
+                    model.save(args.save_to, mode='ml')
                 else:
                     patience += 1
                     print >>sys.stderr, 'hit patience %d' % patience
