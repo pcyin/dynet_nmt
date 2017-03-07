@@ -614,6 +614,7 @@ def train(args):
     dev_data = zip(dev_data_src, dev_data_tgt)
     train_iter = patience = cum_loss = cum_examples = epoch = 0
     hist_valid_scores = []
+    train_time = time.time()
     while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
@@ -623,10 +624,12 @@ def train(args):
             batch_size = len(src_sents)
 
             if train_iter % args.valid_niter == 0:
-                print >>sys.stderr, 'epoch %d, iter %d, cum. loss %f, cum. examples %d' % (epoch, train_iter,
-                                                                                           cum_loss / cum_examples,
-                                                                                           cum_examples)
-                cum_loss = cum_examples = 0.
+                print >> sys.stderr, 'epoch %d, iter %d, cum. loss %f, ' \
+                                     'cum. examples %d, time elapsed %f(s)' % (epoch, train_iter,
+                                                                               cum_loss / cum_examples,
+                                                                               cum_examples,
+                                                                               time.time() - train_time)
+
                 print >>sys.stderr, 'begin validation ...'
                 dev_hyps, dev_bleu = decode(model, dev_data)
                 print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
@@ -644,6 +647,9 @@ def train(args):
                     if patience == args.patience:
                         print 'early stop!'
                         exit(0)
+
+                train_time = time.time()
+                cum_loss = cum_examples = 0.
 
             loss = model.get_encdec_loss(src_sents_wids, tgt_sents_wids)
             loss = dy.sum_batches(loss) / batch_size
