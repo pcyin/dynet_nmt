@@ -797,7 +797,7 @@ def test(args):
     hypotheses, bleu_score = decode(model, test_data)
 
     bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
-    print 'Corpus Level BLEU: %f' % bleu_score
+    print >>sys.stderr, 'Corpus Level BLEU: %f' % bleu_score
 
 
 if __name__ == '__main__':
