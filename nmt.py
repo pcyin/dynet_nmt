@@ -135,10 +135,10 @@ class NMT(object):
         # set model parameters
 
         # set recurrent dropout
-        if args.dropout > 0.:
-            self.enc_forward_builder.set_dropout(args.dropout)
-            self.enc_backward_builder.set_dropout(args.dropout)
-            self.dec_builder.set_dropout(args.dropout)
+        # if args.dropout > 0.:
+        #     self.enc_forward_builder.set_dropout(args.dropout)
+        #     self.enc_backward_builder.set_dropout(args.dropout)
+        #     self.dec_builder.set_dropout(args.dropout)
 
         self.ml_params = [self.src_lookup, self.tgt_lookup,
                           self.enc_forward_builder, self.enc_backward_builder, self.dec_builder,
@@ -790,7 +790,7 @@ def test(args):
     test_data_src = read_corpus(args.test_src)
     test_data_tgt = read_corpus(args.test_tgt)
 
-    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, args.model)
+    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, args.model, args.train_mode)
 
     test_data = zip(test_data_src, test_data_tgt)
 
