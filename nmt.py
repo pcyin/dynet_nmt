@@ -149,6 +149,8 @@ class NMT(object):
 
         self.rl_params = [self.W1_b, self.b1_b, self.W2_b, self.b2_b]
 
+        print >>sys.stderr, 'number of parameters in the model: %d' % model.pl()
+
     def create_ml_parameters(self):
         model = self.model
 
@@ -716,7 +718,7 @@ def train_reinforce(args):
                 if is_better:
                     patience = 0
                     print >>sys.stderr, 'save currently the best model ..'
-                    model.model.save(args.save_to + '.bin')
+                    model.save(args.save_to, mode='rl')
                 else:
                     patience += 1
                     print >>sys.stderr, 'hit patience %d' % patience
