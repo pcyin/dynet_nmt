@@ -234,6 +234,7 @@ class NMT(object):
         b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
+        W1_att_f = dy.parameter(self.W1_att_f)
 
         completed_hypotheses = []
         decoder_init_cell = W_s * decoder_init + b_s
@@ -241,6 +242,13 @@ class NMT(object):
                                  y=[self.tgt_vocab['<s>']],
                                  ctx_tm1=dy.vecInput(self.args.hidden_size * 2),
                                  score=0.)]
+
+        # pre-compute transformations for source sentences in calculating attention score
+        # src_encoding_size, src_sent_len, batch_size
+        src_enc_all = dy.concatenate_cols(src_encodings)
+        # att_hidden_size, src_sent_len, batch_size
+        src_trans_att = W1_att_f * src_enc_all
+        src_len = len(src_encodings)
 
         t = 0
         while len(completed_hypotheses) < beam_size and t < args.decode_max_time_step:
@@ -252,11 +260,12 @@ class NMT(object):
 
                 hyp.state = hyp.state.add_input(x)
                 h_t = hyp.state.output()
-                ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=1)
+                ctx_t, alpha_t = self.attention(src_enc_all, src_trans_att, h_t)
 
                 # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
                 read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
-                y_t = W_y * read_out + b_y
+                # y_t = W_y * read_out + b_y
+                y_t = dy.affine_transform([b_y, W_y, read_out])
                 p_t = dy.log_softmax(y_t).npvalue()
 
                 hyp.ctx_tm1 = ctx_t
@@ -309,6 +318,7 @@ class NMT(object):
         b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
+        W1_att_f = dy.parameter(self.W1_att_f)
 
         decoder_init_cell = W_s * decoder_init + b_s
         decoder_init_state = dy.tanh(decoder_init_cell)
@@ -331,6 +341,13 @@ class NMT(object):
         tgt_word_ids = range(args.tgt_vocab_size)
         eos = self.tgt_vocab['</s>']
 
+        # pre-compute transformations for source sentences in calculating attention score
+        # src_encoding_size, src_sent_len, batch_size
+        src_enc_all = dy.concatenate_cols(src_encodings)
+        # att_hidden_size, src_sent_len, batch_size
+        src_trans_att = W1_att_f * src_enc_all
+        src_len = len(src_encodings)
+
         t = 0
         while len(completed_samples) < sample_num and t < args.decode_max_time_step:
             t += 1
@@ -340,11 +357,9 @@ class NMT(object):
             x = dy.concatenate([y_tm1_embed, ctx_tm1])
             s = s.add_input(x)
             h_t = s.output()
-            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size=sample_num)
+            ctx_t, alpha_t = self.attention(src_enc_all, src_trans_att, h_t)
 
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
-            if args.dropout > 0.:
-                read_out = dy.dropout(read_out, args.dropout)
             # affine transformation tends to give (xxx, 1, batch_size) outputs
             p_t = dy.softmax(dy.affine_transform([b_y, W_y, read_out])).npvalue().reshape((-1, sample_num))
 
@@ -374,13 +389,23 @@ class NMT(object):
         b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
+        W1_att_f = dy.parameter(self.W1_att_f)
 
         tgt_words, tgt_masks = input_transpose(tgt_sents)
         batch_size = len(tgt_sents)
 
         decoder_init_cell = W_s * decoder_init + b_s
+        # initialize decoder state
         s = self.dec_builder.initial_state([decoder_init_cell, dy.tanh(decoder_init_cell)])
+        # initialize first context vector
         ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
+        # pre-compute transformations for source sentences in calculating attention score
+        # src_encoding_size, src_sent_len, batch_size
+        src_enc_all = dy.concatenate_cols(src_encodings)
+        # att_hidden_size, src_sent_len, batch_size
+        src_trans_att = W1_att_f * src_enc_all
+        src_len = len(src_encodings)
+
         losses = []
 
         # start from <S>, until y_{T-1}
@@ -389,14 +414,13 @@ class NMT(object):
             x = dy.concatenate([y_tm1_embed, ctx_tm1])
             s = s.add_input(x)
             h_t = s.output()
-            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
+            ctx_t, alpha_t = self.attention(src_enc_all, src_trans_att, h_t)
 
             # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
             if args.dropout > 0.:
                 read_out = dy.dropout(read_out, args.dropout)
-            # y_t = dy.affine_transform([b_y, W_y, read_out])
-            y_t = W_y * read_out + b_y
+            y_t = dy.affine_transform([b_y, W_y, read_out])
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
 
             if 0 in mask_t:
@@ -419,6 +443,7 @@ class NMT(object):
         b_h = dy.parameter(self.b_h)
         W_y = dy.parameter(self.W_y)
         b_y = dy.parameter(self.b_y)
+        W1_att_f = dy.parameter(self.W1_att_f)
 
         W1_b = dy.parameter(self.W1_b)
         b1_b = dy.parameter(self.b1_b)
@@ -437,13 +462,20 @@ class NMT(object):
         rewards_expr =dy.reshape(rewards_expr, (1, ), batch_size)
         losses_b = []
 
+        # pre-compute transformations for source sentences in calculating attention score
+        # src_encoding_size, src_sent_len, batch_size
+        src_enc_all = dy.concatenate_cols(src_encodings)
+        # att_hidden_size, src_sent_len, batch_size
+        src_trans_att = W1_att_f * src_enc_all
+        src_len = len(src_encodings)
+
         # start from <S>, until y_{T-1}
         for t, (y_ref_t, mask_t) in enumerate(zip(tgt_words[1:], tgt_masks[1:]), start=1):
             y_tm1_embed = dy.lookup_batch(self.tgt_lookup, tgt_words[t - 1])
             x = dy.concatenate([y_tm1_embed, ctx_tm1])
             s = s.add_input(x)
             h_t = s.output()
-            ctx_t, alpha_t = self.attention(src_encodings, h_t, batch_size)
+            ctx_t, alpha_t = self.attention(src_enc_all, src_trans_att, h_t)
 
             # read_out = dy.tanh(W_h * dy.concatenate([h_t, ctx_t]) + b_h)
             read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
@@ -487,19 +519,14 @@ class NMT(object):
 
         return b
 
-    def attention(self, src_encodings, h_t, batch_size):
-        W1_att_f = dy.parameter(self.W1_att_f)
+    def attention(self, src_enc_all, src_trans_att, h_t):
         W1_att_e = dy.parameter(self.W1_att_e)
         W2_att = dy.parameter(self.W2_att)
 
-        src_len = len(src_encodings)
+        att_hidden = dy.tanh(dy.colwise_add(src_trans_att, W1_att_e * h_t))
 
-        # enc_size, sent_len, batch_size
-        src_enc_all = dy.concatenate_cols(src_encodings)
-
-        att_hidden = dy.tanh(dy.colwise_add(W1_att_f * src_enc_all, W1_att_e * h_t))
-        att_weights = dy.reshape(W2_att * att_hidden, (src_len, ), batch_size)
-        # sent_len, batch_size
+        att_weights = dy.transpose(W2_att * att_hidden) # dy.reshape(W2_att * att_hidden, (src_len, ), batch_size)
+        # src_sent_len, batch_size
         att_weights = dy.softmax(att_weights)
 
         ctx = src_enc_all * att_weights
