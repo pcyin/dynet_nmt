@@ -25,6 +25,7 @@ def init_config():
     parser.add_argument('--hidden_size', default=256, type=int)
     parser.add_argument('--attention_size', default=256, type=int)
     parser.add_argument('--dropout', default=0., type=float)
+    parser.add_argument('--update_every_iter', default=2, type=int)
 
     parser.add_argument('--src_vocab_size', default=20000, type=int)
     parser.add_argument('--tgt_vocab_size', default=20000, type=int)
@@ -738,7 +739,7 @@ def train_reinforce(args):
 
             loss.backward()
 
-            if update_batch % 20 == 0:
+            if update_batch % args.update_every_iter == 0:
                 print >>sys.stderr, 'iter %d, update trainer' % train_iter
                 trainer.update()
                 update_batch = 0
