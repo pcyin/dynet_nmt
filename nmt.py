@@ -9,6 +9,7 @@ import dynet as dy
 import cPickle as pkl
 import time
 from nltk.translate.bleu_score import corpus_bleu, sentence_bleu
+from bleu import calc_bleu, calc_f1
 
 def init_config():
     parser = argparse.ArgumentParser()
@@ -457,9 +458,6 @@ class NMT(object):
         s = self.dec_builder.initial_state([decoder_init_cell, dy.tanh(decoder_init_cell)])
         ctx_tm1 = dy.vecInput(self.args.hidden_size * 2)
         losses = []
-
-        rewards_expr = dy.inputVector(rewards)
-        rewards_expr =dy.reshape(rewards_expr, (1, ), batch_size)
         losses_b = []
 
         # pre-compute transformations for source sentences in calculating attention score
@@ -483,6 +481,10 @@ class NMT(object):
                 read_out = dy.dropout(read_out, args.dropout)
             y_t = dy.affine_transform([b_y, W_y, read_out])
             loss_t = dy.pickneglogsoftmax_batch(y_t, y_ref_t)
+
+            # feed in rewards
+            rewards_expr = dy.inputVector(rewards[t])
+            rewards_expr = dy.reshape(rewards_expr, (1,), batch_size)
 
             # compute baseline
             r_b = self.get_rl_baseline(h_t, W1_b, b1_b, W2_b, b2_b)
@@ -557,12 +559,13 @@ class NMT(object):
             #     print ' '.join(hyp)
 
             for hyp in tgt_samples:
-                reward = sentence_bleu([tgt_sent], hyp)
-
+                # reward = sentence_bleu([tgt_sent], hyp)
+                reward = get_rl_reward(tgt_sent, hyp)
                 loss_src_sents.append(src_sent)
                 loss_tgt_sents.append(hyp)
                 rewards.append(reward)
 
+        rewards, _ = input_transpose(rewards, end_token=0)
         # compute loss
         src_encodings, decoder_init = self.encode(loss_src_sents)
         loss, loss_b = self.get_rl_sample_loss(src_encodings, decoder_init, loss_tgt_sents, rewards)
@@ -604,15 +607,14 @@ def data_iter(data, batch_size):
         yield batch
 
 
-def input_transpose(sents, pad=True):
+def input_transpose(sents, end_token=2):
     max_len = max(len(s) for s in sents)
     batch_size = len(sents)
 
-    # assume the id of </s> is 2
     sents_t = []
     masks = []
     for i in xrange(max_len):
-        sents_t.append([sents[k][i] if len(sents[k]) > i else 2 for k in xrange(batch_size)])
+        sents_t.append([sents[k][i] if len(sents[k]) > i else end_token for k in xrange(batch_size)])
         masks.append([1 if len(sents[k]) > i else 0 for k in xrange(batch_size)])
 
     return sents_t, masks
@@ -623,6 +625,20 @@ def word2id(sents, vocab):
         return [[vocab[w] for w in s] for s in sents]
     else:
         return [vocab[w] for w in sents]
+
+
+def get_rl_reward(ref_sent, hyp_sent):
+    reward = []
+    prev_bleu_score = 0.
+    for l in range(1, len(hyp_sent) + 1):
+        partial_hyp = hyp_sent[:l]
+        y_t = hyp_sent[l - 1]
+        bleu_score = calc_bleu(ref_sent, partial_hyp, bp=True)
+
+        delta_bleu = bleu_score - prev_bleu_score
+        reward.append(delta_bleu)
+
+    return reward
 
 
 def train(args):
