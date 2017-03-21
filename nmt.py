@@ -629,14 +629,15 @@ def word2id(sents, vocab):
 
 def get_rl_reward(ref_sent, hyp_sent):
     reward = []
-    prev_bleu_score = 0.
+    prev_score = 0.
     for l in range(1, len(hyp_sent) + 1):
         partial_hyp = hyp_sent[:l]
         y_t = hyp_sent[l - 1]
-        bleu_score = calc_bleu(ref_sent, partial_hyp, bp=True)
+        # score = calc_bleu(ref_sent, partial_hyp)
+        score = calc_bleu(ref_sent, partial_hyp, bp=False)
 
-        delta_bleu = bleu_score - prev_bleu_score
-        reward.append(delta_bleu)
+        delta_score = score - prev_score
+        reward.append(delta_score)
 
     return reward
 
