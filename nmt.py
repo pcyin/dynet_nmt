@@ -634,7 +634,8 @@ def get_rl_reward(ref_sent, hyp_sent):
         partial_hyp = hyp_sent[:l]
         y_t = hyp_sent[l - 1]
         # score = calc_bleu(ref_sent, partial_hyp)
-        score = calc_bleu(ref_sent, partial_hyp, bp=False)
+        # score = calc_bleu(ref_sent, partial_hyp, bp=False)
+        score = calc_f1(ref_sent, partial_hyp)
 
         delta_score = score - prev_score
         reward.append(delta_score)
