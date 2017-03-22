@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import cProfile
 from collections import defaultdict, Counter, namedtuple
 from itertools import chain
@@ -46,14 +48,29 @@ def init_config():
     parser.add_argument('--save_to_file', default=None, type=str)
     parser.add_argument('--patience', default=5, type=int)
 
+    parser.add_argument('--reward', default='bleu')
+
     args = parser.parse_args()
     np.random.seed(args.dynet_seed * 13 / 7)
 
     if args.dynet_gpu:  # the python gpu switch.
-        print 'using GPU'
         import _gdynet as dy
 
     return args
+
+
+def get_reward_func():
+    if args.reward == 'bleu':
+        return calc_bleu
+    elif args.reward == 'bleu_no_bp':
+        return lambda ref, hyp: calc_bleu(ref, hyp, bp=False)
+    elif args.reward == 'f1':
+        return calc_f1
+    else:
+        raise RuntimeError('unidentified reward function [%s]' % args.reward)
+
+
+reward_func = None
 
 
 def read_corpus(file_path):
@@ -74,7 +91,7 @@ def build_vocab(data, cutoff):
 
     word_freq = Counter(chain(*data))
     non_singletons = [w for w in word_freq if word_freq[w] > 1 and w not in vocab]  # do not count <unk> in corpus
-    print 'number of word types: %d, number of word types w/ frequency > 1: %d' % (len(word_freq), len(non_singletons))
+    print('number of word types: %d, number of word types w/ frequency > 1: %d' % (len(word_freq), len(non_singletons)))
 
     top_k_words = sorted(non_singletons, reverse=True, key=word_freq.get)[:cutoff - len(vocab)]
     for word in top_k_words:
@@ -132,7 +149,8 @@ class NMT(object):
                 self.W_h, self.b_h, \
                 self.W_s, self.b_s, \
                 self.W1_att_f, self.W1_att_e, self.W2_att, \
-                self.W1_b, self.b1_b, self.W2_b, self.b2_b = params
+                self.W1_b, self.b1_b = params
+                # self.W1_b, self.b1_b, self.W2_b, self.b2_b = params
 
         # set model parameters
 
@@ -149,9 +167,11 @@ class NMT(object):
                           self.W_s, self.b_s,
                           self.W1_att_f, self.W1_att_e, self.W2_att]
 
-        self.rl_params = [self.W1_b, self.b1_b, self.W2_b, self.b2_b]
+        # self.rl_params = [self.W1_b, self.b1_b, self.W2_b, self.b2_b]
+        # single layer NN as the baseline
+        self.rl_params = [self.W1_b, self.b1_b]
 
-        print >>sys.stderr, 'number of parameters in the model: %d' % model.pl()
+        print('number of parameters in the model: %d' % model.pl(), file=sys.stderr)
 
     def create_ml_parameters(self):
         model = self.model
@@ -186,12 +206,12 @@ class NMT(object):
         model = self.model
 
         # baseline for REINFROCE
-        self.W1_b = model.add_parameters((50, args.hidden_size))
-        self.b1_b = model.add_parameters((50))
+        self.W1_b = model.add_parameters((1, args.hidden_size))
+        self.b1_b = model.add_parameters((1))
         self.b1_b.zero()
-        self.W2_b = model.add_parameters((1, 50))
-        self.b2_b = model.add_parameters((1))
-        self.b2_b.zero()
+        # self.W2_b = model.add_parameters((1, 50))
+        # self.b2_b = model.add_parameters((1))
+        # self.b2_b.zero()
 
     def encode(self, src_sents):
         dy.renew_cg()
@@ -448,8 +468,8 @@ class NMT(object):
 
         W1_b = dy.parameter(self.W1_b)
         b1_b = dy.parameter(self.b1_b)
-        W2_b = dy.parameter(self.W2_b)
-        b2_b = dy.parameter(self.b2_b)
+        # W2_b = dy.parameter(self.W2_b)
+        # b2_b = dy.parameter(self.b2_b)
 
         tgt_words, tgt_masks = input_transpose(tgt_sents)
         batch_size = len(tgt_sents)
@@ -487,7 +507,7 @@ class NMT(object):
             rewards_expr = dy.reshape(rewards_expr, (1,), batch_size)
 
             # compute baseline
-            r_b = self.get_rl_baseline(h_t, W1_b, b1_b, W2_b, b2_b)
+            r_b = self.get_rl_baseline(h_t, W1_b, b1_b)
             # objective for baseline - MSE
             loss_b = dy.square(r_b - rewards_expr)
 
@@ -513,11 +533,10 @@ class NMT(object):
         return loss, loss_b
 
     def get_rl_baseline(self, h_t, *params):
-        W1_b, b1_b, W2_b, b2_b = params
+        W1_b, b1_b = params
 
         h_t = dy.nobackprop(h_t)
-        h = dy.tanh(W1_b * h_t + b1_b)
-        b = dy.tanh(W2_b * h + b2_b)
+        b = dy.tanh(W1_b * h_t + b1_b)
 
         return b
 
@@ -575,10 +594,10 @@ class NMT(object):
     def save(self, path, mode='ml'):
         assert mode in ['ml', 'rl']
         if mode == 'ml':
-            print >>sys.stderr, 'save parameters related to maximum likelihood training to %s' % path
+            print('save parameters related to maximum likelihood training to %s' % path, file=sys.stderr)
             self.model.save(path, self.ml_params)
         elif mode == 'rl':
-            print >> sys.stderr, 'save all model parameters to %s' % path
+            print('save all model parameters to %s' % path, file=sys.stderr)
             self.model.save(path, self.ml_params + self.rl_params)
 
 
@@ -633,9 +652,9 @@ def get_rl_reward(ref_sent, hyp_sent):
     for l in range(1, len(hyp_sent) + 1):
         partial_hyp = hyp_sent[:l]
         y_t = hyp_sent[l - 1]
-        # score = calc_bleu(ref_sent, partial_hyp)
+        score = reward_func(ref_sent, partial_hyp)
         # score = calc_bleu(ref_sent, partial_hyp, bp=False)
-        score = calc_f1(ref_sent, partial_hyp)
+        # score = calc_f1(ref_sent, partial_hyp)
 
         delta_score = score - prev_score
         reward.append(delta_score)
@@ -673,28 +692,28 @@ def train(args):
             batch_size = len(src_sents)
 
             if train_iter % args.valid_niter == 0:
-                print >> sys.stderr, 'epoch %d, iter %d, cum. loss %f, ' \
-                                     'cum. examples %d, time elapsed %f(s)' % (epoch, train_iter,
-                                                                               cum_loss / cum_examples,
-                                                                               cum_examples,
-                                                                               time.time() - train_time)
+                print('epoch %d, iter %d, cum. loss %f, ' \
+                      'cum. examples %d, time elapsed %f(s)' % (epoch, train_iter,
+                                                                cum_loss / cum_examples,
+                                                                cum_examples,
+                                                                time.time() - train_time), )
 
-                print >>sys.stderr, 'begin validation ...'
+                print('begin validation ...', file=sys.stderr)
                 dev_hyps, dev_bleu = decode(model, dev_data)
-                print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
+                print('validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu), file=sys.stderr)
 
                 is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
                 hist_valid_scores.append(dev_bleu)
 
                 if is_better:
                     patience = 0
-                    print >>sys.stderr, 'save currently the best model ..'
+                    print('save currently the best model ..', file=sys.stderr)
                     model.save(args.save_to, mode='ml')
                 else:
                     patience += 1
-                    print >>sys.stderr, 'hit patience %d' % patience
+                    print('hit patience %d' % patience, file=sys.stderr)
                     if patience == args.patience:
-                        print 'early stop!'
+                        print('early stop!')
                         exit(0)
 
                 train_time = time.time()
@@ -708,7 +727,7 @@ def train(args):
             cum_examples += batch_size
 
             ppl = np.exp(loss_val * batch_size / sum(len(s) for s in tgt_sents))
-            print 'epoch %d, iter %d, loss=%f, ppl=%f' % (epoch, train_iter, loss_val, ppl)
+            print('epoch %d, iter %d, loss=%f, ppl=%f' % (epoch, train_iter, loss_val, ppl))
 
             loss.backward()
             trainer.update()
@@ -736,10 +755,10 @@ def train_reinforce(args):
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = patience = cum_loss = cum_examples = epoch = update_batch = 0
+    train_iter = patience = cum_loss = cum_baseline_loss = cum_examples = epoch = update_batch = 0
     hist_valid_scores = []
 
-    print 'begin REINFORCE training'
+    print('begin REINFORCE training')
     while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
@@ -750,26 +769,24 @@ def train_reinforce(args):
             batch_size = len(src_sents)
 
             if train_iter % args.valid_niter == 0:
-                print >>sys.stderr, 'epoch %d, iter %d, cum. loss %f, cum. examples %d' % (epoch, train_iter,
-                                                                                           cum_loss / cum_examples,
-                                                                                           cum_examples)
-                cum_loss = cum_examples = 0.
-                print >>sys.stderr, 'begin validation ...'
+                print('epoch %d, iter %d, begin validation ...' % (epoch, train_iter), file=sys.stderr)
+
                 dev_hyps, dev_bleu = decode(model, dev_data)
-                print >>sys.stderr, 'validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu)
+
+                print('validation: iter %d, dev. bleu %f' % (train_iter, dev_bleu), file=sys.stderr)
 
                 is_better = len(hist_valid_scores) == 0 or dev_bleu > max(hist_valid_scores)
                 hist_valid_scores.append(dev_bleu)
 
                 if is_better:
                     patience = 0
-                    print >>sys.stderr, 'save currently the best model ..'
+                    print('save currently the best model ..', file=sys.stderr)
                     model.save(args.save_to, mode='rl')
                 else:
                     patience += 1
-                    print >>sys.stderr, 'hit patience %d' % patience
+                    print(sys.stderr, 'hit patience %d' % patience, file=sys.stderr)
                     if patience == args.patience:
-                        print 'early stop!'
+                        print('early stop!')
                         exit(0)
 
             loss_r, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
@@ -777,15 +794,19 @@ def train_reinforce(args):
             loss_val = loss.value()
             loss_b_val = loss_b.value()
 
-            cum_loss += loss_val
+            cum_loss += loss_val * batch_size
+            cum_baseline_loss += loss_b_val * sum(len(tgt_sent) for tgt_sent in tgt_sents_wids)
             cum_examples += batch_size
 
-            print 'epoch %d, iter %d, loss=%f, baseline loss=%f' % (epoch, train_iter, loss_val, loss_b_val)
+            print('epoch %d, iter %d, batch size %d, avg. loss %f, avg. baseline loss %f' %
+                  (epoch, train_iter, batch_size, loss_val, loss_b_val),
+                  file=sys.stderr)
 
             loss.backward()
 
             if update_batch % args.update_every_iter == 0:
-                print >>sys.stderr, 'iter %d, update trainer' % train_iter
+                print('iter %d, update trainer' % train_iter)
+                cum_loss = cum_baseline_loss = cum_examples = 0.
                 trainer.update()
                 update_batch = 0
 
@@ -805,17 +826,17 @@ def decode(model, data):
         src_sent_wids = word2id(src_sent, model.src_vocab)
         hyp = model.translate(src_sent_wids)[0]
         hypotheses.append(hyp.y)
-        print '*' * 50
-        print 'Source: ', ' '.join(src_sent)
-        print 'Target: ', ' '.join(tgt_sent)
-        print 'Hypothesis: ', ' '.join(hyp.y)
+        print('*' * 50)
+        print('Source: ', ' '.join(src_sent))
+        print('Target: ', ' '.join(tgt_sent))
+        print('Hypothesis: ', ' '.join(hyp.y))
 
     elapsed = time.time() - begin_time
     bleu_score = get_bleu([tgt for src, tgt in data], hypotheses)
 
-    print >>sys.stderr, 'decoded %d examples, took %d s' % (len(data), elapsed)
+    print('decoded %d examples, took %d s' % (len(data), elapsed), file=sys.stderr)
     if args.save_to_file:
-        print >> sys.stderr, 'save decoding results to %s' % args.save_to_file
+        print('save decoding results to %s' % args.save_to_file, file=sys.stderr)
         with open(args.save_to_file, 'w') as f:
             for hyp in hypotheses:
                 f.write(' '.join(hyp[1:-1]) + '\n')
@@ -843,12 +864,13 @@ def test(args):
     hypotheses, bleu_score = decode(model, test_data)
 
     bleu_score = get_bleu([tgt for src, tgt in test_data], hypotheses)
-    print >>sys.stderr, 'Corpus Level BLEU: %f' % bleu_score
+    print('Corpus Level BLEU: %f' % bleu_score, file=sys.stderr)
 
 
 if __name__ == '__main__':
     args = init_config()
-    print >>sys.stderr, args
+    reward_func = get_reward_func()
+    print(args, file=sys.stderr)
     if args.mode == 'train':
         if args.train_mode == 'ml':
             train(args)
