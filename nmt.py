@@ -649,7 +649,8 @@ def word2id(sents, vocab):
 def get_rl_reward(ref_sent, hyp_sent):
     reward = []
     prev_score = 0.
-    for l in range(1, len(hyp_sent) + 1):
+    delta_scores = []
+    for l in xrange(1, len(hyp_sent) + 1):
         partial_hyp = hyp_sent[:l]
         y_t = hyp_sent[l - 1]
         score = reward_func(ref_sent, partial_hyp)
@@ -657,7 +658,16 @@ def get_rl_reward(ref_sent, hyp_sent):
         # score = calc_f1(ref_sent, partial_hyp)
 
         delta_score = score - prev_score
-        reward.append(delta_score)
+        delta_scores.append(delta_score)
+        prev_score = score
+
+    cum_reward = 0.
+    for i in reversed(xrange(len(hyp_sent))):
+        reward_i = delta_scores[i]
+        cum_reward += reward_i
+        reward.append(cum_reward)
+
+    reward = list(reversed(reward))
 
     return reward
 
