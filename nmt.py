@@ -45,6 +45,7 @@ def init_config():
     parser.add_argument('--valid_niter', default=500, type=int)
     parser.add_argument('--model', default=None, type=str)
     parser.add_argument('--save_to', default='model', type=str)
+    parser.add_argument('--save_model_after', default=2)
     parser.add_argument('--save_to_file', default=None, type=str)
     parser.add_argument('--patience', default=5, type=int)
 
@@ -672,7 +673,7 @@ def get_rl_reward(ref_sent, hyp_sent):
     return reward
 
 
-def train(args):
+def train_mle(args):
     train_data_src = read_corpus(args.train_src)
     train_data_tgt = read_corpus(args.train_tgt)
 
@@ -690,9 +691,10 @@ def train(args):
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = patience = cum_loss = cum_examples = epoch = 0
+    train_iter = patience = cum_loss = cum_examples = epoch = valid_num = best_model_iter = 0
     hist_valid_scores = []
     train_time = time.time()
+    print('begin Maximum Likelihood training')
     while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
@@ -702,6 +704,7 @@ def train(args):
             batch_size = len(src_sents)
 
             if train_iter % args.valid_niter == 0:
+                valid_num += 1
                 print('epoch %d, iter %d, cum. loss %f, ' \
                       'cum. examples %d, time elapsed %f(s)' % (epoch, train_iter,
                                                                 cum_loss / cum_examples,
@@ -717,6 +720,7 @@ def train(args):
 
                 if is_better:
                     patience = 0
+                    best_model_iter = train_iter
                     print('save currently the best model ..', file=sys.stderr)
                     model.save(args.save_to, mode='ml')
                 else:
@@ -724,7 +728,13 @@ def train(args):
                     print('hit patience %d' % patience, file=sys.stderr)
                     if patience == args.patience:
                         print('early stop!')
+                        print('the best model is from iteration [%d]' % best_model_iter, file=sys.stderr)
                         exit(0)
+
+                if valid_num > args.save_model_after:
+                    model_file = args.save_to + ('.iter%d' % train_iter)
+                    print('save model to %s' % model_file, file=sys.stderr)
+                    model.save(model_file, mode='ml')
 
                 train_time = time.time()
                 cum_loss = cum_examples = 0.
@@ -765,7 +775,7 @@ def train_reinforce(args):
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
-    train_iter = patience = cum_loss = cum_baseline_loss = cum_examples = epoch = update_batch = 0
+    train_iter = patience = cum_loss = cum_baseline_loss = cum_examples = epoch = valid_num = update_batch = 0
     hist_valid_scores = []
 
     print('begin REINFORCE training')
@@ -779,6 +789,7 @@ def train_reinforce(args):
             batch_size = len(src_sents)
 
             if train_iter % args.valid_niter == 0:
+                valid_num += 1
                 print('epoch %d, iter %d, begin validation ...' % (epoch, train_iter), file=sys.stderr)
 
                 dev_hyps, dev_bleu = decode(model, dev_data)
@@ -794,7 +805,7 @@ def train_reinforce(args):
                     model.save(args.save_to, mode='rl')
                 else:
                     patience += 1
-                    print(sys.stderr, 'hit patience %d' % patience, file=sys.stderr)
+                    print('hit patience %d' % patience, file=sys.stderr)
                     if patience == args.patience:
                         print('early stop!')
                         exit(0)
@@ -883,7 +894,7 @@ if __name__ == '__main__':
     print(args, file=sys.stderr)
     if args.mode == 'train':
         if args.train_mode == 'ml':
-            train(args)
+            train_mle(args)
         elif args.train_mode == 'rl':
             train_reinforce(args)
         # cProfile.run('train_reinforce(args)', sort=2)
