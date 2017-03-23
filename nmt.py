@@ -709,7 +709,7 @@ def train_mle(args):
                       'cum. examples %d, time elapsed %f(s)' % (epoch, train_iter,
                                                                 cum_loss / cum_examples,
                                                                 cum_examples,
-                                                                time.time() - train_time), )
+                                                                time.time() - train_time), file=sys.stderr)
 
                 print('begin validation ...', file=sys.stderr)
                 dev_hyps, dev_bleu = decode(model, dev_data)
