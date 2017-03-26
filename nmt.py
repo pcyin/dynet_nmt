@@ -19,7 +19,7 @@ def init_config():
     parser.add_argument('--dynet-mem', default=4000, type=int)
     parser.add_argument('--dynet-seed', default=914808182, type=int)
 
-    parser.add_argument('--mode', choices=['train', 'test'], default='train')
+    parser.add_argument('--mode', choices=['train', 'test', 'sample'], default='train')
     parser.add_argument('--train_mode', choices=['ml', 'rl'], default='ml')
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--beam_size', default=5, type=int)
@@ -862,6 +862,30 @@ def decode(model, data):
     return hypotheses, bleu_score
 
 
+def sample(args):
+    train_data_src = read_corpus(args.train_src)
+    train_data_tgt = read_corpus(args.train_tgt)
+
+    src_vocab = build_vocab(train_data_src, args.src_vocab_size)
+    tgt_vocab = build_vocab(train_data_tgt, args.tgt_vocab_size)
+
+    src_vocab_id2word = build_id2word_vocab(src_vocab)
+    tgt_vocab_id2word = build_id2word_vocab(tgt_vocab)
+
+    model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word, args.model, load_mode='ml')
+
+    train_data = zip(train_data_src, train_data_tgt)
+
+    for src_sents, tgt_sents in train_data:
+        src_sents_wids = word2id(src_sents, src_vocab)
+        tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
+
+        sampled_tgt_sents = model.sample(src_sents_wids, sample_num=args.sample_size, to_word=True)
+
+        for sent in sampled_tgt_sents:
+            print(sent)
+
+
 def test(args):
     train_data_src = read_corpus(args.train_src)
     train_data_tgt = read_corpus(args.train_tgt)
@@ -898,5 +922,7 @@ if __name__ == '__main__':
     elif args.mode == 'test':
         test(args)
         # cProfile.run('test(args)', sort=2)
+    elif args.mode == 'sample':
+        sample(args)
 
 
