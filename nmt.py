@@ -48,6 +48,8 @@ def init_config():
     parser.add_argument('--save_model_after', default=2)
     parser.add_argument('--save_to_file', default=None, type=str)
     parser.add_argument('--patience', default=5, type=int)
+    parser.add_argument('--optimizer', choices=['adam', 'sgd'], default='adam', type=str)
+    parser.add_argument('--lr', default=0.001, type=float)
 
     parser.add_argument('--reward', default='bleu')
 
@@ -680,6 +682,16 @@ def get_rl_reward(ref_sent, hyp_sent):
     return reward
 
 
+def get_optimizer(model):
+    if args.optimizer == 'adam':
+        trainer = dy.AdamTrainer(model.model, alpha=args.lr)
+    elif args.optimizer == 'sgd':
+        trainer = dy.SimpleSGDTrainer(model.model, args.lr)
+    else:
+        raise RuntimeError('Unidentified optimizer %s' % args.optimizer)
+
+    return trainer
+
 def train_mle(args):
     train_data_src = read_corpus(args.train_src)
     train_data_tgt = read_corpus(args.train_tgt)
@@ -778,7 +790,7 @@ def train_reinforce(args):
     else:
         model = NMT(args, src_vocab, tgt_vocab, src_vocab_id2word, tgt_vocab_id2word)
 
-    trainer = dy.SimpleSGDTrainer(model.model, 0.001)
+    trainer = get_optimizer(model)
 
     train_data = zip(train_data_src, train_data_tgt)
     dev_data = zip(dev_data_src, dev_data_tgt)
