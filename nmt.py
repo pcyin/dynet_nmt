@@ -106,6 +106,16 @@ def build_id2word_vocab(vocab):
     return {v: k for k, v in vocab.iteritems()}
 
 
+def categorical_sample(prob_n):
+    """
+    Sample from categorical distribution
+    Each row specifies class probabilities
+    """
+    prob_n = np.asarray(prob_n)
+    csprob_n = np.cumsum(prob_n)
+    return (csprob_n > np.random.rand()).argmax()
+
+
 class Hypothesis(object):
     def __init__(self, state, y, ctx_tm1, score):
         self.state = state
@@ -346,12 +356,12 @@ class NMT(object):
         decoder_init_cell = W_s * decoder_init + b_s
         decoder_init_state = dy.tanh(decoder_init_cell)
 
-        decoder_init_cell = dy.reshape(dy.concatenate_cols([decoder_init_cell for _ in xrange(sample_num)]), (args.hidden_size, ), batch_size=sample_num)
-        decoder_init_state = dy.reshape(dy.concatenate_cols([decoder_init_state for _ in xrange(sample_num)]), (args.hidden_size, ), batch_size=sample_num)
+        # decoder_init_cell = dy.reshape(dy.concatenate_cols([decoder_init_cell for _ in xrange(sample_num)]), (args.hidden_size, ), batch_size=sample_num)
+        # decoder_init_state = dy.reshape(dy.concatenate_cols([decoder_init_state for _ in xrange(sample_num)]), (args.hidden_size, ), batch_size=sample_num)
 
         # (hidden_size, sample_num)
-        # decoder_init_cell = dy.inputTensor(np.tile(decoder_init_cell.npvalue(), (sample_num, 1)).T, batched=True)
-        # decoder_init_state = dy.inputTensor(np.tile(decoder_init_state.npvalue(), (sample_num, 1)).T, batched=True)
+        decoder_init_cell = dy.inputTensor(np.tile(decoder_init_cell.npvalue(), (sample_num, 1)).T, batched=True)
+        decoder_init_state = dy.inputTensor(np.tile(decoder_init_state.npvalue(), (sample_num, 1)).T, batched=True)
 
         ctx_tm1 = dy.zeroes((args.hidden_size * 2, ), batch_size=sample_num)
         s = self.dec_builder.initial_state([decoder_init_cell, decoder_init_state])
@@ -386,7 +396,8 @@ class NMT(object):
             for sid, prev_word in enumerate(y_tm1):
                 # draw a sample
                 if prev_word != eos:
-                    y_t = np.random.choice(tgt_word_ids, p=p_t[:, sid] / p_t[:, sid].sum())
+                    # y_t = np.random.choice(tgt_word_ids, p=p_t[:, sid] / p_t[:, sid].sum())
+                    y_t = categorical_sample(p_t[:, sid])
                     cur_samples.append(y_t)
                     if y_t == eos:
                         completed_samples.append([samples[i][sid] for i in xrange(t)] + [y_t])
