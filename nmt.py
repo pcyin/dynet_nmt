@@ -111,7 +111,6 @@ def categorical_sample(prob_n):
     Sample from categorical distribution
     Each row specifies class probabilities
     """
-    prob_n = np.asarray(prob_n)
     csprob_n = np.cumsum(prob_n)
     return (csprob_n > np.random.rand()).argmax()
 
