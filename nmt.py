@@ -968,10 +968,14 @@ def train_reinforce(args):
     hist_valid_scores = []
 
     print('begin REINFORCE training')
-    while args.max_niter == -1 or train_iter < args.max_niter:
+    while True:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
             train_iter += 1
+
+            if 0 < args.max_niter < train_iter:
+                exit(1)
+
             update_batch += 1
             src_sents_wids = word2id(src_sents, src_vocab)
             tgt_sents_wids = word2id(tgt_sents, tgt_vocab)
