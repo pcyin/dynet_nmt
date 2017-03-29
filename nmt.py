@@ -50,6 +50,7 @@ def init_config():
     parser.add_argument('--patience', default=5, type=int)
     parser.add_argument('--optimizer', choices=['adam', 'sgd'], default='sgd', type=str)
     parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('max_niter', default=-1, type=int)
 
     parser.add_argument('--reward', default='bleu')
 
@@ -967,7 +968,7 @@ def train_reinforce(args):
     hist_valid_scores = []
 
     print('begin REINFORCE training')
-    while True:
+    while args.max_niter == -1 or train_iter < args.max_niter:
         epoch += 1
         for src_sents, tgt_sents in data_iter(train_data, batch_size=args.batch_size):
             train_iter += 1
