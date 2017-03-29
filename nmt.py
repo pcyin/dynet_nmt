@@ -50,7 +50,7 @@ def init_config():
     parser.add_argument('--patience', default=5, type=int)
     parser.add_argument('--optimizer', choices=['adam', 'sgd'], default='sgd', type=str)
     parser.add_argument('--lr', default=0.001, type=float)
-    parser.add_argument('max_niter', default=-1, type=int)
+    parser.add_argument('--max_niter', default=-1, type=int)
 
     parser.add_argument('--reward', default='bleu')
 
