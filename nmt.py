@@ -48,7 +48,7 @@ def init_config():
     parser.add_argument('--save_model_after', default=2)
     parser.add_argument('--save_to_file', default=None, type=str)
     parser.add_argument('--patience', default=5, type=int)
-    parser.add_argument('--optimizer', choices=['adam', 'sgd'], default='adam', type=str)
+    parser.add_argument('--optimizer', choices=['adam', 'sgd'], default='sgd', type=str)
     parser.add_argument('--lr', default=0.001, type=float)
 
     parser.add_argument('--reward', default='bleu')
@@ -340,6 +340,122 @@ class NMT(object):
 
         return sorted(completed_hypotheses, key=lambda x: x.score, reverse=True)
 
+    def sample_with_loss(self, src_encodings, decoder_init, src_batch_size, sample_num=5, to_word=False):
+        W_s = dy.parameter(self.W_s)
+        b_s = dy.parameter(self.b_s)
+        W_h = dy.parameter(self.W_h)
+        b_h = dy.parameter(self.b_h)
+        W_y = dy.parameter(self.W_y)
+        b_y = dy.parameter(self.b_y)
+        W1_att_f = dy.parameter(self.W1_att_f)
+
+        W1_b = dy.parameter(self.W1_b)
+        b1_b = dy.parameter(self.b1_b)
+
+        # (hidden_size, batch_size)
+        decoder_init_cell = W_s * decoder_init + b_s
+
+        batch_size = src_batch_size * sample_num
+
+        # (hidden_size, batch_size)
+        decoder_init_cell_tiled = dy.concatenate_cols([decoder_init_cell for _ in xrange(sample_num)])
+        decoder_init_cell = dy.reshape(decoder_init_cell_tiled, (args.hidden_size, ),
+                                       batch_size=batch_size)
+
+        decoder_init_state = dy.tanh(decoder_init_cell)
+
+        ctx_tm1 = dy.zeroes((args.hidden_size * 2, ), batch_size=batch_size)
+        s = self.dec_builder.initial_state([decoder_init_cell, decoder_init_state])
+
+        # pre-compute transformations for source sentences in calculating attention score
+        # (src_encoding_size, src_sent_len, src_batch_size)
+        src_enc_all = dy.concatenate_cols(src_encodings)
+
+        # (src_encoding_size, src_sent_len, batch_size)
+        src_enc_all_tiled = dy.concatenate_cols([src_enc_all for _ in xrange(sample_num)])
+        src_enc_all = dy.reshape(src_enc_all_tiled, (args.hidden_size * 2, len(src_encodings)),
+                                 batch_size=batch_size)
+
+        # (att_hidden_size, src_sent_len, batch_size)
+        src_trans_att = W1_att_f * src_enc_all
+
+        # # (att_hidden_size, src_sent_len, batch_size)
+        # src_trans_att_tiled = dy.concatenate_cols([src_trans_att for _ in xrange(sample_num)])
+        # src_trans_att = dy.reshape(src_trans_att_tiled, (args.attention_size, len(src_encodings)),
+        #                            batch_size=batch_size)
+
+        bos = self.tgt_vocab['<s>']
+        eos = self.tgt_vocab['</s>']
+
+        samples = [[bos for _ in xrange(batch_size)]]
+        completed_samples = [list() for _ in xrange(batch_size)]
+        losses = []
+        baselines = []
+        sample_masks = []
+        num_active_words = batch_size
+
+        t = 0
+        while num_active_words > 0 and t < args.decode_max_time_step:
+            t += 1
+
+            y_tm1 = samples[-1]
+            y_tm1_embed = dy.lookup_batch(self.tgt_lookup, y_tm1)
+            x = dy.concatenate([y_tm1_embed, ctx_tm1])
+            s = s.add_input(x)
+            h_t = s.output()
+            ctx_t, alpha_t = self.attention(src_enc_all, src_trans_att, h_t)
+
+            read_out = dy.tanh(dy.affine_transform([b_h, W_h, dy.concatenate([h_t, ctx_t])]))
+            # affine transformation tends to give (xxx, 1, batch_size) outputs
+            p_t = dy.softmax(dy.affine_transform([b_y, W_y, read_out])).npvalue().reshape((-1, batch_size))
+
+            # generate samples!
+            sampled_words_t = []
+            mask_t = []
+            num_active_words = 0
+            for sid, prev_word in enumerate(y_tm1):
+                if prev_word != eos:
+                # draw a sample
+                    # y_t = np.random.choice(tgt_word_ids, p=p_t[:, sid] / p_t[:, sid].sum())
+                    y_t = categorical_sample(p_t[:, sid])
+                    sampled_words_t.append(y_t)
+                    mask_t.append(1)
+
+                    if y_t != eos:
+                        num_active_words += 1
+                    else:
+                        # we have a completed sample
+                        completed_samples[sid] = [samples[ti][sid] for ti in xrange(t)] + [y_t]
+                else:
+                    sampled_words_t.append(eos)
+                    mask_t.append(0)
+
+            # compute the softmax for calculating the loss function
+            if args.dropout > 0.:
+                read_out_train = dy.dropout(read_out, args.dropout)
+            else:
+                read_out_train = read_out
+
+            y_t_weights = dy.affine_transform([b_y, W_y, read_out_train])
+            # reference y_t's are sampled target words (y_t)
+            loss_t = dy.pickneglogsoftmax_batch(y_t_weights, sampled_words_t)
+
+            # compute the baseline
+            b_t = self.get_rl_baseline(h_t, W1_b, b1_b)
+
+            losses.append(loss_t)
+            baselines.append(b_t)
+            sample_masks.append(mask_t)
+
+            # ending current iteration at t
+            samples.append(sampled_words_t)
+            ctx_tm1 = ctx_t
+
+        if to_word:
+            completed_samples = word2id(completed_samples, self.tgt_vocab_id2word)
+
+        return completed_samples, sample_masks, losses, baselines
+
     def sample(self, src_sent, sample_num=5, to_word=False):
         if not type(src_sent[0]) == list:
             src_sent = [src_sent]
@@ -571,7 +687,6 @@ class NMT(object):
         return loss
 
     def get_rl_loss(self, src_sents, tgt_sents):
-        # sample using beam search
         rewards = []
         loss_src_sents = []
         loss_tgt_sents = []
@@ -600,6 +715,60 @@ class NMT(object):
         loss, loss_b = self.get_rl_sample_loss(src_encodings, decoder_init, loss_tgt_sents, rewards)
 
         return loss, loss_b
+
+    def get_rl_loss_new(self, src_sents, tgt_sents):
+        src_batch_size = len(src_sents)
+        batch_size = src_batch_size * args.sample_size
+        src_encodings, decoder_init = self.encode(src_sents)
+        samples, sample_masks, losses, baselines = self.sample_with_loss(src_encodings, decoder_init,
+                                                                  src_batch_size=src_batch_size,
+                                                                  sample_num=args.sample_size,
+                                                                  to_word=False)
+
+        rewards = []
+        for example_id, (src_sent, tgt_sent) in enumerate(zip(src_sents, tgt_sents)):
+            offset = example_id * args.sample_size
+            tgt_samples = samples[offset: offset + args.sample_size]
+
+            for hyp in tgt_samples:
+                reward = get_rl_reward(tgt_sent, hyp)
+                rewards.append(reward)
+
+        rewards, _ = input_transpose(rewards, end_token=0)
+
+        # compute loss
+        max_t = len(losses)
+        masked_losses = []
+        masked_losses_b = []
+        for t in xrange(max_t):
+            mask_t = sample_masks[t]
+            loss_t = losses[t]
+            b_t = baselines[t]
+            reward_t = rewards[t]
+
+            # objective for baseline - MSE
+            reward_expr = dy.inputTensor(reward_t, batched=True)
+            loss_bt = dy.square(b_t - reward_expr)
+
+            # subtract loss with baseline
+            loss_t = (reward_expr - b_t) * loss_t
+
+            if 0 in mask_t:
+                mask_expr = dy.inputTensor(mask_t, batched=True)
+
+                loss_t = loss_t * mask_expr
+                loss_bt = loss_bt * mask_expr
+
+            masked_losses.append(loss_t)
+            masked_losses_b.append(loss_bt)
+
+        loss = dy.esum(masked_losses)
+        loss = dy.sum_batches(loss) / batch_size
+
+        loss_b = dy.sum_batches(dy.esum(masked_losses_b)) / np.sum(sample_masks)
+
+        return loss, loss_b
+
 
     def save(self, path, mode='ml'):
         assert mode in ['ml', 'rl']
@@ -829,24 +998,20 @@ def train_reinforce(args):
                         print('early stop!')
                         exit(0)
 
-            loss_r, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
-            loss = loss_r + loss_b
+            loss_rl, loss_b = model.get_rl_loss(src_sents_wids, tgt_sents_wids)
+            loss = loss_rl + loss_b
             loss_val = loss.value()
+            loss_rl_val = loss_rl.value()
             loss_b_val = loss_b.value()
 
-            cum_loss += loss_val * batch_size
-            cum_baseline_loss += loss_b_val * sum(len(tgt_sent) for tgt_sent in tgt_sents_wids)
-            cum_examples += batch_size
-
-            print('epoch %d, iter %d, batch size %d, avg. loss %f, avg. baseline loss %f' %
-                  (epoch, train_iter, batch_size, loss_val, loss_b_val),
+            print('epoch %d, iter %d, batch size %d, batch loss %f, avg. RL loss %f, avg. baseline loss %f' %
+                  (epoch, train_iter, batch_size, loss_val, loss_rl_val, loss_b_val),
                   file=sys.stderr)
 
             loss.backward()
 
             if update_batch % args.update_every_iter == 0:
                 print('iter %d, update trainer' % train_iter)
-                cum_loss = cum_baseline_loss = cum_examples = 0.
                 trainer.update()
                 update_batch = 0
 
